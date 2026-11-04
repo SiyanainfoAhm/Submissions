@@ -1013,8 +1013,14 @@ function toneForAttemptSlot(
 
   if (r[slotIndex] === 'competent') return 'green';
   if (r[slotIndex] === 'not_yet_competent') return 'red';
-  if (column === 'student' && submittedSlots.includes(slotIndex) && r[slotIndex] === null) {
-    return handoffIncomplete ? 'gray' : 'yellow';
+  /*
+   * A submitted attempt with no trainer result yet is always "awaiting" (yellow) for the student, and also for the
+   * trainer column when the submission has not been handed to the trainer yet (handoffIncomplete). These dots must
+   * match the "Submitted / Not sent to trainer" comment — they used to go grey in that state, as if nothing happened.
+   */
+  if (submittedSlots.includes(slotIndex) && r[slotIndex] === null) {
+    if (column === 'student') return 'yellow';
+    if (handoffIncomplete) return 'yellow';
   }
   if (column === 'student' && studentNextYellow === slotIndex) return 'yellow';
   return 'gray';
