@@ -22,6 +22,11 @@ import {
 // Note: NodeNext ESM requires explicit .js extensions in source imports.
 // TypeScript will resolve these to the corresponding .ts files at build time.
 import { renderAppendixAMatrixHtml } from './appendixAMatrixData.js';
+import {
+  getWrittenEvidenceChecklistQuestions,
+  isWrittenEvidenceChecklistSection,
+  renderWrittenEvidenceChecklistHtml,
+} from './writtenEvidenceChecklist.js';
 import { buildInductionPdfHtml } from './inductionHtml.js';
 import { renderTaskQuestionInstructionHtml } from './instructionBlocksHtml.js';
 import { processPdfJobs, DEFAULT_WORKER_LIMIT, MAX_WORKER_LIMIT } from './pdfWorker.js';
@@ -942,6 +947,7 @@ function buildHtml(data: {
     .written-evidence-table .we-radio .radio-circle.filled { background: #000; border-color: #000; }
     .written-evidence-wrapper { page-break-inside: avoid; break-inside: avoid; }
     .written-evidence-wrapper .written-evidence-checklist-heading { page-break-after: avoid; break-after: avoid; margin: 0 0 12px 0; font-size: 11pt; font-weight: 700; }
+    .written-evidence-wrapper .written-evidence-question-label { page-break-after: avoid; break-after: avoid; margin: 0 0 6px 0; font-size: 10pt; font-weight: 700; }
     .assessment-marking-checklist-wrapper { page-break-inside: avoid; break-inside: avoid; margin-bottom: 16px; }
     .assessment-marking-checklist-header { text-align: center; font-weight: 700; font-size: 12pt; margin: 0 0 6px 0; }
     .assessment-marking-checklist-subheader { text-align: center; font-weight: 700; font-size: 11pt; margin: 0 0 12px 0; }
@@ -1249,9 +1255,8 @@ ${ASSESSMENT_QUESTION_BLOCK_CSS}
       const lastLikertSectionId = learnerEvalLikertSections.length > 0 ? learnerEvalLikertSections[0].section.id : null;
       for (const { section, questions } of sections) {
       /* Skip Written Evidence Checklist section entirely when it has no rows - avoids blank header */
-      if (questions.some((q) => q.question.code === 'written.evidence.checklist')) {
-        const checklistQ = questions.find((q) => q.question.code === 'written.evidence.checklist' && q.question.type === 'single_choice' && q.rows.length > 0);
-        if (!checklistQ) continue;
+      if (isWrittenEvidenceChecklistSection(section.pdf_render_mode, questions)) {
+        if (getWrittenEvidenceChecklistQuestions(section.pdf_render_mode, questions).length === 0) continue;
       }
       /* Skip Assessment Marking Checklist when both Evidence and Performance outcome have no rows */
       if (section.pdf_render_mode === 'task_marking_checklist') {
@@ -1453,32 +1458,12 @@ ${ASSESSMENT_QUESTION_BLOCK_CSS}
           }
           html += '</tbody></table>';
         }
-      } else if (questions.some((q) => q.question.code === 'written.evidence.checklist')) {
-        const checklistQ = questions.find((q) => q.question.code === 'written.evidence.checklist' && q.question.type === 'single_choice' && q.rows.length > 0);
-        if (checklistQ) {
-          const weTitle = section.title || 'Written Evidence Checklist';
-          html += '<div class="written-evidence-wrapper">';
-          html += `<h3 class="written-evidence-checklist-heading">${weTitle}</h3>`;
-          html += '<table class="written-evidence-table">';
-          html += '<thead>';
-          html += '<tr><th rowspan="2" class="we-index"></th><th rowspan="2" class="we-left">Written Evidence</th><th colspan="2">Submitted</th></tr>';
-          html += '<tr><th class="we-yn">Yes</th><th class="we-yn">No</th></tr>';
-          html += '</thead><tbody>';
-          for (let i = 0; i < checklistQ.rows.length; i++) {
-            const row = checklistQ.rows[i];
-            const key = `q-${checklistQ.question.id}-${row.id}`;
-            const val = String(answers.get(key) ?? '');
-            const yes = val === 'yes';
-            const no = val === 'no';
-            html += '<tr>';
-            html += `<td class="we-index">${i + 1}</td>`;
-            html += `<td class="we-left">${row.row_label || ''}</td>`;
-            html += `<td class="we-yn"><span class="we-radio"><span class="radio-circle${yes ? ' filled' : ''}"></span></span></td>`;
-            html += `<td class="we-yn"><span class="we-radio"><span class="radio-circle${no ? ' filled' : ''}"></span></span></td>`;
-            html += '</tr>';
-          }
-          html += '</tbody></table></div>';
-        }
+      } else if (isWrittenEvidenceChecklistSection(section.pdf_render_mode, questions)) {
+        html += renderWrittenEvidenceChecklistHtml(
+          section.title,
+          getWrittenEvidenceChecklistQuestions(section.pdf_render_mode, questions),
+          answers,
+        );
       } else if (section.pdf_render_mode === 'task_marking_checklist') {
         const evidenceQ = questions.find((q) => q.question.code === 'assessment.marking.evidence_outcome' && q.question.type === 'single_choice' && (q.rows?.length ?? 0) > 0);
         const perfQ = questions.find((q) => q.question.code === 'assessment.marking.performance_outcome' && q.question.type === 'single_choice' && (q.rows?.length ?? 0) > 0);

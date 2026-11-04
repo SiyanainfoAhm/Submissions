@@ -33,6 +33,7 @@ import {
   type FormBuilderStep,
 } from '../lib/formEngine';
 import { uploadFormCoverImage, uploadRowImage, uploadQuestionImage } from '../lib/storage';
+import { WRITTEN_EVIDENCE_CODE, WRITTEN_EVIDENCE_MODE, isWrittenEvidenceChecklistQuestion } from '../lib/writtenEvidenceChecklist';
 import type { Form, FormStep, FormSection, FormQuestion, FormQuestionOption, FormQuestionRow, Json } from '../types/database';
 import { Card } from '../components/ui/Card';
 import { Loader } from '../components/ui/Loader';
@@ -1372,16 +1373,40 @@ export const AdminFormBuilderPage: React.FC = () => {
 
   const addQuestion = async () => {
     if (!selectedSectionId) return;
-    const { data } = await supabase
+    // Written Evidence Checklist sections: new questions are checklist questions out of the box
+    // (single choice yes/no, rows supported, trainer + office), not a plain short-text question.
+    const isChecklistSection = selectedSection?.pdf_render_mode === WRITTEN_EVIDENCE_MODE;
+    const { data: rawData } = await supabase
       .from('skyline_form_questions')
-      .insert({
-        section_id: selectedSectionId,
-        type: 'short_text',
-        label: 'New Question',
-        sort_order: selectedSection?.questions.length || 0,
-      })
+      .insert(
+        isChecklistSection
+          ? {
+              section_id: selectedSectionId,
+              type: 'single_choice',
+              code: WRITTEN_EVIDENCE_CODE,
+              label: 'Written Evidence Checklist',
+              sort_order: selectedSection?.questions.length || 0,
+              role_visibility: { student: false, trainer: true, office: true },
+              role_editability: { student: false, trainer: true, office: true },
+            }
+          : {
+              section_id: selectedSectionId,
+              type: 'short_text',
+              label: 'New Question',
+              sort_order: selectedSection?.questions.length || 0,
+            },
+      )
       .select('*')
       .single();
+    let data = rawData;
+    if (data && isChecklistSection) {
+      await supabase.from('skyline_form_question_options').insert([
+        { question_id: (data as FormQuestion).id, value: 'yes', label: 'Yes', sort_order: 0 },
+        { question_id: (data as FormQuestion).id, value: 'no', label: 'No', sort_order: 1 },
+      ]);
+      const { data: opts } = await supabase.from('skyline_form_question_options').select('*').eq('question_id', (data as FormQuestion).id).order('sort_order');
+      data = { ...data, options: (opts as FormQuestionOption[]) ?? [], rows: [] as FormQuestionRow[] } as typeof data;
+    }
     if (data) {
       setSteps((prev) =>
         prev.map((s) => ({
@@ -2496,10 +2521,10 @@ export const AdminFormBuilderPage: React.FC = () => {
                         </div>
                       </div>
                     )}
-                    {(q.type === 'likert_5' || q.type === 'grid_table' || (q.type === 'single_choice' && (q.code === 'written.evidence.checklist' || q.code === 'assessment.marking.evidence_outcome' || q.code === 'assessment.marking.performance_outcome'))) && (
+                    {(q.type === 'likert_5' || q.type === 'grid_table' || isWrittenEvidenceChecklistQuestion(selectedSection?.pdf_render_mode, q) || (q.type === 'single_choice' && (q.code === 'assessment.marking.evidence_outcome' || q.code === 'assessment.marking.performance_outcome'))) && (
                       <>
                         {q.type === 'grid_table' && <div className="text-sm font-semibold text-gray-700 mb-2">2. Table rows</div>}
-                        {q.type === 'single_choice' && q.code === 'written.evidence.checklist' && <div className="text-sm font-semibold text-gray-700 mb-2">Checklist rows</div>}
+                        {isWrittenEvidenceChecklistQuestion(selectedSection?.pdf_render_mode, q) && <div className="text-sm font-semibold text-gray-700 mb-2">Checklist rows</div>}
                         {q.type === 'single_choice' && q.code === 'assessment.marking.evidence_outcome' && <div className="text-sm font-semibold text-gray-700 mb-2">Evidence Outcome rows</div>}
                         {q.type === 'single_choice' && q.code === 'assessment.marking.performance_outcome' && <div className="text-sm font-semibold text-gray-700 mb-2">Performance Outcome rows</div>}
                         <QuestionRowsEditor
@@ -2509,7 +2534,7 @@ export const AdminFormBuilderPage: React.FC = () => {
                           steps={steps}
                           onStepsCreated={refreshStepsTree}
                           gridTableLayout={q.type === 'grid_table' ? ((q.pdf_meta as Record<string, unknown>)?.layout as string) : undefined}
-                          simpleLabelsOnly={q.type === 'single_choice' && (q.code === 'written.evidence.checklist' || q.code === 'assessment.marking.evidence_outcome' || q.code === 'assessment.marking.performance_outcome')}
+                          simpleLabelsOnly={isWrittenEvidenceChecklistQuestion(selectedSection?.pdf_render_mode, q) || (q.type === 'single_choice' && (q.code === 'assessment.marking.evidence_outcome' || q.code === 'assessment.marking.performance_outcome'))}
                         />
                       </>
                     )}

@@ -10,6 +10,12 @@ import {
   renderQuestionBlockClose,
   renderQuestionBlockOpen,
 } from './assessmentQuestionBlock.js';
+import {
+  WRITTEN_EVIDENCE_CSS,
+  getWrittenEvidenceChecklistQuestions,
+  isWrittenEvidenceChecklistSection,
+  renderWrittenEvidenceChecklistHtml,
+} from './writtenEvidenceChecklist.js';
 import { publicDir } from './paths.js';
 import {
   buildInstancePdfFileName,
@@ -476,6 +482,7 @@ export function buildHtml(data: {
     .grid-table-no-border .label-cell, .grid-table-no-border .value-cell { background: transparent !important; white-space: pre-line; }
     .grid-table-no-border .sub-section-header { background: transparent !important; color: #000000 !important; border: 1px solid #000 !important; }
 ${ASSESSMENT_QUESTION_BLOCK_CSS}
+${WRITTEN_EVIDENCE_CSS}
     .step-page { page-break-after: always; }
     .section-table, .likert-table, .assessment-tasks-table { page-break-inside: auto; }
     .decl-table, .result-sheet-table, .assessment-summary-table { page-break-inside: avoid; }
@@ -755,6 +762,13 @@ ${ASSESSMENT_QUESTION_BLOCK_CSS}
       const learnerEvalLikertSections = isLearnerEvaluation ? sections.filter(s => s.section.pdf_render_mode === 'likert_table').sort((a, b) => b.section.sort_order - a.section.sort_order) : [];
       const lastLikertSectionId = learnerEvalLikertSections.length > 0 ? learnerEvalLikertSections[0].section.id : null;
       for (const { section, questions } of sections) {
+      /* Skip Written Evidence Checklist section when no question has rows - avoids blank header (matches live /pdf) */
+      if (
+        isWrittenEvidenceChecklistSection(section.pdf_render_mode, questions) &&
+        getWrittenEvidenceChecklistQuestions(section.pdf_render_mode, questions).length === 0
+      ) {
+        continue;
+      }
       if (isLearnerEvaluation && !learnerEvalIntroShown) {
         html += '<div class="appendix-b-page">';
         html += '<div class="appendix-b-content-wrapper">';
@@ -1675,6 +1689,12 @@ ${ASSESSMENT_QUESTION_BLOCK_CSS}
           }
           html += '</div>';
         }
+      } else if (isWrittenEvidenceChecklistSection(section.pdf_render_mode, questions)) {
+        html += renderWrittenEvidenceChecklistHtml(
+          section.title,
+          getWrittenEvidenceChecklistQuestions(section.pdf_render_mode, questions),
+          answers,
+        );
       } else {
         const instructionBlocks = questions.filter((q) => q.question.type === 'instruction_block');
         for (const { question } of instructionBlocks) {

@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install deps and build
 COPY package*.json tsconfig.json ./
 # Keep this list in sync with local pdf-server sources
-COPY index.ts htmlGenerator.ts paths.ts loadEnv.ts seedGeneratedPdfs.ts pdfWorker.ts instancePdfGenerator.ts sharepointUpload.ts pdfFileNaming.ts splitCoverHtml.ts appendixAMatrixData.ts inductionHtml.ts instructionBlocksHtml.ts pdfBrowser.ts pdfMemory.ts pdfConstants.ts pdfRender.ts logoUrls.ts assessmentQuestionBlock.ts ./
+COPY index.ts htmlGenerator.ts paths.ts loadEnv.ts seedGeneratedPdfs.ts pdfWorker.ts instancePdfGenerator.ts sharepointUpload.ts pdfFileNaming.ts splitCoverHtml.ts appendixAMatrixData.ts inductionHtml.ts instructionBlocksHtml.ts pdfBrowser.ts pdfMemory.ts pdfConstants.ts pdfRender.ts logoUrls.ts assessmentQuestionBlock.ts writtenEvidenceChecklist.ts ./
 COPY public/ ./public/
 RUN npm ci && npm run build
 

@@ -30,6 +30,7 @@ import {
   type InstanceWorkflowNotificationContext,
 } from '../lib/formEngine';
 import type { FormTemplate, FormQuestionWithOptionsAndRows, FormSectionWithQuestions } from '../lib/formEngine';
+import { getWrittenEvidenceChecklistQuestions, isWrittenEvidenceChecklistSection } from '../lib/writtenEvidenceChecklist';
 import { getTaskQuestionDisplayNumbers } from '../lib/taskQuestionsNumbering';
 import type { FormAnswer } from '../types/database';
 import type { FormRole } from '../utils/roleGuard';
@@ -3073,9 +3074,8 @@ export const InstanceFillPage: React.FC = () => {
                     }
                   }
                   /* Hide Written Evidence Checklist section when it has no rows - avoids blank header */
-                  if (section.questions.some((q) => q.code === 'written.evidence.checklist')) {
-                    const checklistQ = section.questions.find((q) => q.code === 'written.evidence.checklist' && q.type === 'single_choice');
-                    if (checklistQ && checklistQ.rows.length === 0) return false;
+                  if (isWrittenEvidenceChecklistSection(section.pdf_render_mode, section.questions)) {
+                    if (getWrittenEvidenceChecklistQuestions(section.pdf_render_mode, section.questions).length === 0) return false;
                   }
                   /* Hide Assessment Marking Checklist section when it has no rows in either Evidence or Performance outcome */
                   if (section.pdf_render_mode === 'task_marking_checklist') {
@@ -3302,14 +3302,17 @@ export const InstanceFillPage: React.FC = () => {
                             </div>
                           );
                         })()
-                      ) : section.questions.some((q) => q.code === 'written.evidence.checklist') ? (
+                      ) : isWrittenEvidenceChecklistSection(section.pdf_render_mode, section.questions) ? (
                         (() => {
-                          const checklistQ = section.questions.find((q) => q.code === 'written.evidence.checklist' && q.type === 'single_choice' && q.rows.length > 0);
-                          if (!checklistQ) return null;
+                          /* Every checklist question (Task 3.1, 3.2, ...) renders with its own rows — not just the first. */
+                          const checklistQs = getWrittenEvidenceChecklistQuestions(section.pdf_render_mode, section.questions);
+                          if (checklistQs.length === 0) return null;
+                          const renderChecklistQ = (checklistQ: (typeof checklistQs)[number]) => {
                           const re = (checklistQ.role_editability as Record<string, boolean>) || {};
                           const editable = isQuestionEditableForRole(re) && canRoleEditCurrentWorkflow;
                           return (
-                            <div className="overflow-x-auto">
+                            <div key={checklistQ.id} className="overflow-x-auto">
+                              {checklistQs.length > 1 && <div className="font-semibold text-sm mb-2">{checklistQ.label}</div>}
                               <table className="w-full border-collapse border border-black text-sm">
                                 <thead>
                                   <tr>
@@ -3360,6 +3363,8 @@ export const InstanceFillPage: React.FC = () => {
                               </table>
                             </div>
                           );
+                          };
+                          return <div className="space-y-6">{checklistQs.map(renderChecklistQ)}</div>;
                         })()
                       ) : section.pdf_render_mode === 'task_marking_checklist' ? (
                         (() => {
