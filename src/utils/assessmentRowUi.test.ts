@@ -4,6 +4,7 @@ import {
   calculateAssessmentFinalStatus,
   computeAttemptTones,
   computeRowUi,
+  getAssessmentOutcomeDisplay,
   getInstanceWorkflowLabel,
   getMissedAttemptIndexes,
   getMissedAttemptWindowText,
@@ -342,27 +343,68 @@ describe('computeAttemptTones', () => {
   const trainerTones = (input: Parameters<typeof computeAttemptTones>[0]) => computeAttemptTones(input).trainer;
   const tones = studentTones;
 
-  it('trainer dots stay gray when submission exists but handoff to trainer never happened', () => {
-    expect(
-      trainerTones({
-        submissionCount: 1,
-        results: [null, null, null],
-        no_attempt_rollovers: 0,
-        did_not_attempt: false,
-        role_context: 'student',
-        status: 'draft',
-      }),
-    ).toEqual(['gray', 'gray', 'gray']);
-    expect(
-      studentTones({
-        submissionCount: 1,
-        results: [null, null, null],
-        no_attempt_rollovers: 0,
-        did_not_attempt: false,
-        role_context: 'student',
-        status: 'draft',
-      }),
-    ).toEqual(['gray', 'gray', 'gray']);
+  it('submitted but not yet handed to the trainer: student dot yellow (submitted), trainer dot yellow (awaiting)', () => {
+    const input = {
+      submissionCount: 1,
+      results: [null, null, null] as AttemptResult[],
+      no_attempt_rollovers: 0,
+      did_not_attempt: false,
+      role_context: 'student',
+      status: 'draft',
+    };
+    expect(trainerTones(input)).toEqual(['yellow', 'gray', 'gray']);
+    expect(studentTones(input)).toEqual(['yellow', 'gray', 'gray']);
+  });
+
+  it('not-sent submission of a later attempt lights that attempt slot, earlier results unchanged', () => {
+    const base = { role_context: 'student', status: 'draft', did_not_attempt: false, no_attempt_rollovers: 0 };
+    // 2nd attempt submitted, not sent
+    expect(studentTones({ ...base, submissionCount: 2, results: ['not_yet_competent', null, null] })).toEqual(['red', 'yellow', 'gray']);
+    expect(trainerTones({ ...base, submissionCount: 2, results: ['not_yet_competent', null, null] })).toEqual(['red', 'yellow', 'gray']);
+    // 3rd attempt submitted, not sent
+    expect(studentTones({ ...base, submissionCount: 3, results: ['not_yet_competent', 'not_yet_competent', null] })).toEqual(['red', 'red', 'yellow']);
+    expect(trainerTones({ ...base, submissionCount: 3, results: ['not_yet_competent', 'not_yet_competent', null] })).toEqual(['red', 'red', 'yellow']);
+    // first window missed: the submission counts as attempt 2
+    expect(studentTones({ ...base, submissionCount: 1, results: [null, null, null], no_attempt_rollovers: 1 })).toEqual(['red', 'yellow', 'gray']);
+  });
+
+  it('nothing submitted: not-sent logic does not light any dot (trainer stays gray)', () => {
+    const t = trainerTones({
+      submissionCount: 0,
+      results: [null, null, null],
+      role_context: 'student',
+      status: 'draft',
+      no_attempt_rollovers: 0,
+      did_not_attempt: false,
+    });
+    expect(t).toEqual(['gray', 'gray', 'gray']);
+  });
+
+  it('Progress column always agrees with the Comments status for submitted-not-sent (icons + dots + comment)', () => {
+    const row = { status: 'draft', role_context: 'student', submission_count: 1, submitted_at: '2026-03-01T00:00:00Z', end_date: '2026-11-29' };
+    const none: AttemptResult[] = [null, null, null];
+    const comment = getAssessmentOutcomeDisplay({
+      status: row.status,
+      role_context: row.role_context,
+      attemptResults: none,
+      submissionCount: 1,
+      submittedAt: row.submitted_at,
+    });
+    expect(comment.label).toBe('Submitted');
+    expect(comment.subtext).toBe('Not sent to trainer');
+    const final = calculateAssessmentFinalStatus({ ...row, attempt_results: none });
+    expect(final.studentProgress).toBe('done');
+    expect(final.trainerProgress).toBe('pending');
+    expect(final.officeProgress).toBe('idle');
+    const tones = computeAttemptTones({ submissionCount: 1, results: none, role_context: row.role_context, status: row.status });
+    expect(tones.student[0]).toBe('yellow');
+    expect(tones.trainer[0]).toBe('yellow');
+  });
+
+  it('submitted and sent to trainer keeps its existing tones', () => {
+    const input = { submissionCount: 1, results: [null, null, null] as AttemptResult[], role_context: 'trainer', status: 'draft' };
+    expect(studentTones(input)).toEqual(['yellow', 'gray', 'gray']);
+    expect(trainerTones(input)).toEqual(['yellow', 'gray', 'gray']);
   });
 
   it('labels stuck handoff as submitted not sent', () => {
