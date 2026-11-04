@@ -12,6 +12,7 @@ import {
   type AttemptResult,
 } from '../utils/assessmentRowUi';
 import { mergeSaveValuePreservingExisting } from '../utils/formAnswerMerge';
+import { getEffectiveEndDate } from '../utils/assessmentDeadline';
 import {
   findDuplicateAssessmentTaskStepsByRowId,
   planFormScopedAssessmentTaskLabelRepair,
@@ -1387,12 +1388,13 @@ export async function clearAssessmentAttemptHistory(instanceId: number): Promise
 
 export async function updateFormInstanceDates(
   instanceId: number,
-  updates: { start_date?: string | null; end_date?: string | null },
+  updates: { start_date?: string | null; end_date?: string | null; extension_date?: string | null },
   options?: { resetAttempts?: boolean }
 ): Promise<void> {
   const changingStart = 'start_date' in updates;
   const changingEnd = 'end_date' in updates;
-  if (!changingStart && !changingEnd) return;
+  const changingExtension = 'extension_date' in updates;
+  if (!changingStart && !changingEnd && !changingExtension) return;
 
   const { data: current, error: fetchError } = await supabase
     .from('skyline_form_instances')
@@ -1407,6 +1409,8 @@ export async function updateFormInstanceDates(
   const payload: Record<string, unknown> = {};
   if (changingStart) payload.start_date = updates.start_date ? updates.start_date.trim() : null;
   if (changingEnd) payload.end_date = updates.end_date ? updates.end_date.trim() : null;
+  // Setting an extension never touches end_date and never resets attempts (only an end_date change does).
+  if (changingExtension) payload.extension_date = updates.extension_date ? updates.extension_date.trim() : null;
 
   const hadTerminalRollover =
     Number((current as { no_attempt_rollovers?: number | null } | null)?.no_attempt_rollovers ?? 0) > 0 ||
@@ -1647,25 +1651,25 @@ export async function issueInstanceAccessLink(
   let expiresAt: string;
   const { data: instDates } = await supabase
     .from('skyline_form_instances')
-    .select('start_date, end_date')
+    .select('start_date, end_date, extension_date')
     .eq('id', instanceId)
     .maybeSingle();
   if (roleContext === 'student') {
-    // Enforce access window in Melbourne time (AEDT/AEST): must be within [start_date, end_date] inclusive.
-    // End date is treated as end-of-day (23:59) via token expiry and date comparisons.
+    // Enforce access window in Melbourne time (AEDT/AEST): must be within [start_date, deadline] inclusive,
+    // where deadline = COALESCE(extension_date, end_date). End is treated as end-of-day (23:59).
     const start = String((instDates as { start_date?: string | null } | null)?.start_date ?? '').trim();
-    const end = String((instDates as { end_date?: string | null } | null)?.end_date ?? '').trim();
+    const end = getEffectiveEndDate(instDates as { end_date?: string | null; extension_date?: string | null } | null);
     const todayMel = getMelbourneDateStr(new Date());
     if (start && todayMel < start) return null;
     if (end && todayMel > end) return null;
   }
-  const instanceEndDate = (instDates as { end_date?: string | null } | null)?.end_date ?? null;
+  const instanceEndDate = getEffectiveEndDate(instDates as { end_date?: string | null; extension_date?: string | null } | null) || null;
   const isTrainerOrOffice = roleContext === 'trainer' || roleContext === 'office';
   if (useResubmissionExpiry && resubmissionExpiresAt) {
     // Align new token expiry to the instance's current deadline (admin-extended).
     expiresAt = resubmissionExpiresAt;
   } else if (roleContext === 'student' && instanceEndDate && instanceEndDate.trim()) {
-    // Student access should expire at the instance end_date (Melbourne end-of-day).
+    // Student access should expire at the instance deadline (extension_date, else end_date; Melbourne end-of-day).
     expiresAt = new Date(getMelbourneEndOfDayUTC(instanceEndDate.trim())).toISOString();
   } else if (ttlMinutes != null && Number.isFinite(ttlMinutes) && ttlMinutes > 0) {
     expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
@@ -1817,7 +1821,7 @@ export async function listStudentAssessmentsPaged(
     });
 
   return {
-    data: await withFormCourseIds(mapped),
+    data: await withExtensionDates(await withFormCourseIds(mapped)),
     total,
     page,
     pageSize,
@@ -1857,7 +1861,7 @@ export async function validateInstanceAccessToken(
   if (role === 'student') {
     const { data: inst } = await supabase
       .from('skyline_form_instances')
-      .select('form_id, student_id, start_date, end_date, did_not_attempt')
+      .select('form_id, student_id, start_date, end_date, extension_date, did_not_attempt')
       .eq('id', instanceId)
       .single();
     if (inst) {
@@ -1886,7 +1890,7 @@ export async function validateInstanceAccessToken(
       }
 
       const startDate = (inst as { start_date?: string | null }).start_date ?? null;
-      const endDateRaw = (inst as { end_date?: string | null }).end_date ?? null;
+      const endDateRaw = getEffectiveEndDate(inst as { end_date?: string | null; extension_date?: string | null }) || null;
       const endDate = endDateRaw != null ? String(endDateRaw).trim() : null;
       const todayMel = getMelbourneDateStr(new Date());
       const start = (startDate ?? '').trim();
@@ -1983,17 +1987,31 @@ export async function listInstanceAccessTokens(instanceId: number): Promise<Inst
   return (data as InstanceAccessTokenInfo[]) || [];
 }
 
-/** Re-enable revoked links and extend expiry. Admin can use this to allow access past form end_date. */
+/**
+ * Re-enable revoked links and extend the deadline. Admin can use this to allow access past the form end_date.
+ * The deadline is extended through extension_date — end_date is NEVER changed here. Student link expiry is set to the
+ * (new) effective deadline, Melbourne end-of-day; trainer/office links keep the plain +extraDays expiry.
+ */
 export async function extendInstanceAccessTokens(instanceId: number, roleContext: InstanceAccessRole, extraDays = 30): Promise<void> {
-  // Keep instance end_date aligned with link extension so access checks remain consistent.
   const today = getMelbourneDateStr(new Date());
   const desiredEnd = getMelbourneDateStr(new Date(Date.now() + extraDays * 24 * 60 * 60 * 1000));
-  const { data: inst } = await supabase.from('skyline_form_instances').select('end_date').eq('id', instanceId).maybeSingle();
-  const currentEnd = (inst as { end_date?: string | null } | null)?.end_date ?? null;
-  const currentTrim = (currentEnd ?? '').trim();
-  const nextEnd = currentTrim ? (currentTrim < today ? desiredEnd : (currentTrim < desiredEnd ? desiredEnd : currentTrim)) : desiredEnd;
-  await supabase.from('skyline_form_instances').update({ end_date: nextEnd }).eq('id', instanceId);
-  const newExpiresAt = new Date(Date.now() + extraDays * 24 * 60 * 60 * 1000).toISOString();
+  const { data: inst } = await supabase
+    .from('skyline_form_instances')
+    .select('end_date, extension_date')
+    .eq('id', instanceId)
+    .maybeSingle();
+  const currentEffective = getEffectiveEndDate(inst as { end_date?: string | null; extension_date?: string | null } | null);
+  const nextEffective = currentEffective
+    ? (currentEffective < today ? desiredEnd : (currentEffective < desiredEnd ? desiredEnd : currentEffective))
+    : desiredEnd;
+  if (nextEffective !== currentEffective) {
+    const { error: extErr } = await supabase.from('skyline_form_instances').update({ extension_date: nextEffective }).eq('id', instanceId);
+    if (extErr) console.error('extendInstanceAccessTokens extension_date update error', extErr);
+  }
+  const newExpiresAt =
+    roleContext === 'student'
+      ? new Date(getMelbourneEndOfDayUTC(nextEffective)).toISOString()
+      : new Date(Date.now() + extraDays * 24 * 60 * 60 * 1000).toISOString();
   const { error } = await supabase
     .from('skyline_instance_access_tokens')
     .update({ revoked_at: null, expires_at: newExpiresAt })
@@ -2009,9 +2027,12 @@ export async function extendInstanceAccessTokensToDate(
   roleContext: InstanceAccessRole,
   endDateStr: string
 ): Promise<void> {
-  const utcMs = getMelbourneEndOfDayUTC(endDateStr);
-  const newExpiresAt = new Date(utcMs).toISOString();
   await supabase.from('skyline_form_instances').update({ end_date: endDateStr.trim() || null }).eq('id', instanceId);
+  // Link expiry follows the effective deadline: a real extension (kept in step by the DB trigger) outlives end_date.
+  const { data: after } = await supabase.from('skyline_form_instances').select('end_date, extension_date').eq('id', instanceId).maybeSingle();
+  const effective = getEffectiveEndDate(after as { end_date?: string | null; extension_date?: string | null } | null) || endDateStr.trim();
+  const utcMs = getMelbourneEndOfDayUTC(effective);
+  const newExpiresAt = new Date(utcMs).toISOString();
   const { error } = await supabase
     .from('skyline_instance_access_tokens')
     .update({ revoked_at: null, expires_at: newExpiresAt })
@@ -2019,6 +2040,27 @@ export async function extendInstanceAccessTokensToDate(
     .eq('role_context', roleContext)
     .is('consumed_at', null);
   if (error) console.error('extendInstanceAccessTokensToDate error', error);
+}
+
+/**
+ * Align the student link expiry (and re-enable it) to the instance's effective deadline, Melbourne end-of-day.
+ * Never writes end_date or extension_date. No-op when the instance has no deadline.
+ */
+export async function syncStudentTokenExpiryToDeadline(instanceId: number): Promise<void> {
+  const { data: inst } = await supabase
+    .from('skyline_form_instances')
+    .select('end_date, extension_date')
+    .eq('id', instanceId)
+    .maybeSingle();
+  const effective = getEffectiveEndDate(inst as { end_date?: string | null; extension_date?: string | null } | null);
+  if (!effective) return;
+  const { error } = await supabase
+    .from('skyline_instance_access_tokens')
+    .update({ revoked_at: null, expires_at: new Date(getMelbourneEndOfDayUTC(effective)).toISOString() })
+    .eq('instance_id', instanceId)
+    .eq('role_context', 'student')
+    .is('consumed_at', null);
+  if (error) console.error('syncStudentTokenExpiryToDeadline error', error);
 }
 
 /** Allow student resubmission: set instance back to draft, role to student, and re-enable student link. For 2nd/3rd attempts. */
@@ -3063,6 +3105,8 @@ export interface SubmittedInstanceRow {
   submission_count: number;
   start_date: string | null;
   end_date: string | null;
+  /** Optional admin-granted later deadline (never earlier than end_date). Deadline = COALESCE(extension_date, end_date). */
+  extension_date?: string | null;
   no_attempt_rollovers?: number | null;
   did_not_attempt?: boolean | null;
   /** Number of persisted student answers returned with dashboard rows. */
@@ -3107,6 +3151,30 @@ async function withFormCourseIds<T extends SubmittedInstanceRow>(rows: T[]): Pro
     ...r,
     form_course_ids: [...new Set(byForm.get(r.form_id) ?? [])],
   }));
+}
+
+/**
+ * Batch-attach `extension_date` to instance rows (the paged RPCs / mixed selects do not return it).
+ * Degrades to "no extension" if the lookup fails (e.g. before the extension_date migration has been applied).
+ */
+async function withExtensionDates<T extends SubmittedInstanceRow>(rows: T[]): Promise<T[]> {
+  const ids = [...new Set(rows.map((r) => r.id).filter((n) => Number.isFinite(n) && n > 0))];
+  if (ids.length === 0) return rows;
+  const byId = new Map<number, string | null>();
+  for (let i = 0; i < ids.length; i += 500) {
+    const { data, error } = await supabase
+      .from('skyline_form_instances')
+      .select('id, extension_date')
+      .in('id', ids.slice(i, i + 500));
+    if (error) {
+      console.error('withExtensionDates error', error);
+      return rows;
+    }
+    for (const r of (data as { id: number; extension_date: string | null }[] | null) || []) {
+      byId.set(Number(r.id), r.extension_date ? String(r.extension_date) : null);
+    }
+  }
+  return rows.map((r) => ({ ...r, extension_date: byId.get(r.id) ?? null }));
 }
 
 export interface AdminDashboardStatsV2 {
@@ -3213,11 +3281,11 @@ export async function listAdminDashboardInstancesPaged(
   }
 }
 
-function mapAdminDashboardInstancesPaged(
+async function mapAdminDashboardInstancesPaged(
   data: unknown,
   page: number,
   pageSize: number
-): PaginatedResult<SubmittedInstanceRow> {
+): Promise<PaginatedResult<SubmittedInstanceRow>> {
   const rowsRaw =
     (data as Array<{
       id: number;
@@ -3240,7 +3308,7 @@ function mapAdminDashboardInstancesPaged(
   const total = rowsRaw.length > 0 ? Number(rowsRaw[0].total_count ?? rowsRaw.length) : 0;
   // No token lookup needed for admin dashboard list; link controls live in assessments directory.
   return {
-    data: rowsRaw.map((r) => ({
+    data: await withExtensionDates(rowsRaw.map((r) => ({
       id: Number(r.id),
       form_id: Number(r.form_id),
       form_name: String(r.form_name ?? ''),
@@ -3259,7 +3327,7 @@ function mapAdminDashboardInstancesPaged(
       batch_name: r.batch_name != null ? String(r.batch_name) : null,
       trainer_name: r.trainer_name != null ? String(r.trainer_name) : null,
       link_expired: false,
-    })),
+    }))),
     total: Number.isFinite(total) ? total : 0,
     page,
     pageSize,
@@ -3731,7 +3799,7 @@ export async function listSubmittedInstancesPaged(
     });
 
   return {
-    data: await withFormCourseIds(mappedDir),
+    data: await withExtensionDates(await withFormCourseIds(mappedDir)),
     total,
     page,
     pageSize,
@@ -4003,7 +4071,7 @@ export async function listDashboardInstances(
     });
 
   return {
-    data: await withFormCourseIds(mappedDash),
+    data: await withExtensionDates(await withFormCourseIds(mappedDash)),
     total: Number(count ?? 0),
     page,
     pageSize,
@@ -4187,7 +4255,7 @@ export async function listTrainerUnitInstancesPaged(
   });
 
   return {
-    data: await withFormCourseIds(mapped),
+    data: await withExtensionDates(await withFormCourseIds(mapped)),
     total: Number(count ?? 0),
     page,
     pageSize,

@@ -30,6 +30,7 @@ import {
   calculateAssessmentFinalStatus,
   type AttemptResult,
 } from '../utils/assessmentRowUi';
+import { getEffectiveEndDate, hasActiveExtension } from '../utils/assessmentDeadline';
 import { FormDocumentsPanel } from '../components/documents/FormDocumentsPanel';
 import { cn } from '../components/utils/cn';
 import {
@@ -360,7 +361,7 @@ export const DashboardPage: React.FC = () => {
                       answerCount: row.answer_count,
                       attemptResults: rawAttemptResults,
                       trainerAssessmentExists: row.trainer_assessment_exists,
-                      endDate: row.end_date,
+                      endDate: getEffectiveEndDate(row) || row.end_date,
                     });
                     const ui = computeRowUi({
                       row: {
@@ -403,6 +404,11 @@ export const DashboardPage: React.FC = () => {
                               <span>
                                 <span className="text-gray-500">End</span> {formatDDMMYYYY(row.end_date)}
                               </span>
+                              {hasActiveExtension(row) ? (
+                                <span>
+                                  <span className="text-gray-500">Extended to</span> {formatDDMMYYYY(row.extension_date ?? null)}
+                                </span>
+                              ) : null}
                             </div>
                           </td>
                           <td className="px-3 py-2 border-b border-[var(--border)] align-top text-gray-700 break-words">
@@ -417,6 +423,9 @@ export const DashboardPage: React.FC = () => {
                           </td>
                           <td className="hidden md:table-cell px-3 py-2 border-b border-[var(--border)] text-gray-700 whitespace-nowrap tabular-nums align-top">
                             {formatDDMMYYYY(row.end_date)}
+                            {hasActiveExtension(row) ? (
+                              <div className="text-xs text-amber-700">Extended to {formatDDMMYYYY(row.extension_date ?? null)}</div>
+                            ) : null}
                           </td>
                           <td className="px-3 py-2 border-b border-[var(--border)] align-top min-w-[12rem]">
                             <div className="flex flex-col gap-1">

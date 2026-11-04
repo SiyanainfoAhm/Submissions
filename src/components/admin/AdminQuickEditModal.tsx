@@ -11,7 +11,8 @@ import { toast } from '../../utils/toast';
 import { cn } from '../utils/cn';
 import { formatDDMMYYYY, getInstanceWorkflowLabel } from '../../utils/assessmentRowUi';
 import type { SubmittedInstanceRow } from '../../lib/formEngine';
-import { fetchInstance } from '../../lib/formEngine';
+import { fetchInstance, syncStudentTokenExpiryToDeadline, updateFormInstanceDates } from '../../lib/formEngine';
+import { validateExtensionDate } from '../../utils/assessmentDeadline';
 import type { AssessmentSummaryDataEntry, ResultsDataEntry, ResultsOfficeEntry } from '../../lib/formEngine';
 import {
   cloneQuickEditData,
@@ -550,12 +551,33 @@ export const AdminQuickEditModal: React.FC<Props> = ({ isOpen, onClose, row, onS
       toast.error(firstError ?? 'Fix date validation errors before saving.');
       return;
     }
+    // Extension date lives on the instance (not in the form answers), so it is saved separately and only when changed.
+    const nextExtension = String(draft.context.extensionDate ?? '').trim() || null;
+    const baseExtension = String(baseline.context.extensionDate ?? '').trim() || null;
+    const extensionChanged = nextExtension !== baseExtension;
+    if (extensionChanged) {
+      const extensionError = validateExtensionDate(draft.context.endDate, nextExtension);
+      if (extensionError) {
+        toast.error(extensionError);
+        return;
+      }
+    }
     setSaving(true);
     const res = await saveQuickEditChanges({ baseline, draft });
     if (!res.ok) {
       setSaving(false);
       toast.error(res.error);
       return;
+    }
+    if (extensionChanged) {
+      try {
+        await updateFormInstanceDates(row.id, { extension_date: nextExtension });
+        await syncStudentTokenExpiryToDeadline(row.id);
+      } catch (err) {
+        setSaving(false);
+        toast.error(err instanceof Error ? err.message : 'Failed to save extension date');
+        return;
+      }
     }
 
     const refreshed = await loadQuickEditData(row);
@@ -666,6 +688,25 @@ export const AdminQuickEditModal: React.FC<Props> = ({ isOpen, onClose, row, onS
         ) : draft ? (
           <>
             <ContextHeader data={draft} />
+
+            <div className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-[var(--border)] bg-white p-3">
+              <div className="min-w-[200px]">
+                <label className="mb-1 block text-xs font-semibold text-gray-600">Extension date (optional)</label>
+                <DatePicker
+                  value={draft.context.extensionDate ?? ''}
+                  onChange={(v) =>
+                    setDraft((prev) => (prev ? { ...prev, context: { ...prev.context, extensionDate: v || null } } : prev))
+                  }
+                  compact
+                  placement="below"
+                  minDate={draft.context.endDate || undefined}
+                  disabled={saving}
+                />
+              </div>
+              <p className="max-w-md text-xs text-gray-500">
+                A later deadline for this student. The deadline is the extension when set, otherwise the end date. The end date is not changed.
+              </p>
+            </div>
 
             {hasDateValidationErrors ? (
               <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">

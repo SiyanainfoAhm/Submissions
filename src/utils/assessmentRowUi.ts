@@ -1,5 +1,7 @@
 import { formatIsoDateOnly, formatMelbourneDateTime, isTimestampIso, MELBOURNE_TZ } from './melbourneTime';
 
+import { getEffectiveEndDate } from './assessmentDeadline';
+
 export type AttemptResult = 'competent' | 'not_yet_competent' | null;
 
 export type AttemptDotTone = 'green' | 'red' | 'yellow' | 'gray';
@@ -17,6 +19,8 @@ export type AssessmentRowUiState =
 export type RowWindowInput = {
   start_date?: string | null;
   end_date?: string | null;
+  /** Optional later deadline; the deadline is COALESCE(extension_date, end_date). */
+  extension_date?: string | null;
   did_not_attempt?: boolean | null;
   no_attempt_rollovers?: number | null;
   status?: string | null;
@@ -78,6 +82,7 @@ export type InstanceWorkflowRow = {
   attempt_results?: AttemptResult[] | null;
   trainer_assessment_exists?: boolean | null;
   end_date?: string | null;
+  extension_date?: string | null;
   workflow_status?: string | null;
   office_assessment_completed?: boolean | null;
   /** Compatibility inputs used by API/UI mappers. */
@@ -128,7 +133,7 @@ export function calculateAssessmentFinalStatus(input: InstanceWorkflowRow): Asse
     }) > 0;
   const hasSavedAnswers =
     Math.max(0, Number(input.answer_count ?? 0) || 0) > 0 || legacyStatus === 'incomplete';
-  const end = String(input.end_date ?? '').trim();
+  const end = getEffectiveEndDate(input);
   const expired =
     Boolean(input.expired) ||
     (end ? melDateString() > end : legacyStatus === 'incomplete');
@@ -394,7 +399,7 @@ export function withinInstanceAccessWindow(
 ): { ok: boolean; reason?: string } {
   const todayMel = (today ?? melDateString()).trim();
   const start = String(row.start_date ?? '').trim();
-  const end = String(row.end_date ?? '').trim();
+  const end = getEffectiveEndDate(row);
   if (start && todayMel < start) {
     return { ok: false, reason: `Available from ${formatDDMMYYYY(start)}` };
   }
@@ -415,7 +420,7 @@ export function computeRowUi(input: {
 }): AssessmentRowUiState {
   const today = (input.today ?? melDateString()).trim();
   const start = String(input.row.start_date ?? '').trim();
-  const end = String(input.row.end_date ?? '').trim();
+  const end = getEffectiveEndDate(input.row);
   const r = (input.attemptResults ?? []).slice(0, 3);
   const anyCompetent = r.some((x) => x === 'competent');
   const anyNYC = r.some((x) => x === 'not_yet_competent');
