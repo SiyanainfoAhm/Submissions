@@ -229,7 +229,22 @@ async function migrateTaskSectionsToSteps(formId: number, introStepId: number): 
 }
 
 /** Create a separate step (Instructions, Questions, Results) for each assessment task row that doesn't have one. Call for existing forms. */
-export async function ensureTaskSectionsForForm(formId: number): Promise<{ created: number }> {
+const ensureTaskSectionsInFlight = new Map<number, Promise<{ created: number }>>();
+
+/**
+ * Single-flight per form. This runs on every builder load AND every fetchTemplateForForm; React
+ * StrictMode / concurrent callers used to run it in parallel — each passed the "already linked?"
+ * check before the other had inserted its sections, so both inserted the same task step.
+ */
+export function ensureTaskSectionsForForm(formId: number): Promise<{ created: number }> {
+  const running = ensureTaskSectionsInFlight.get(formId);
+  if (running) return running;
+  const p = ensureTaskSectionsForFormImpl(formId).finally(() => ensureTaskSectionsInFlight.delete(formId));
+  ensureTaskSectionsInFlight.set(formId, p);
+  return p;
+}
+
+async function ensureTaskSectionsForFormImpl(formId: number): Promise<{ created: number }> {
   const steps = await fetchFormSteps(formId);
   const introStep = steps.find((s) => s.title === 'Introductory Details' || s.subtitle?.includes('Student'));
   if (!introStep) return { created: 0 };
@@ -402,7 +417,18 @@ export async function insertAssessmentTaskStepWithSections(
   const existingStepId = await findStepIdLinkedToTaskRow(formId, rowId);
   if (existingStepId != null) return existingStepId;
 
-  const { data: taskStep } = await supabase
+  // A step with this title may already exist whose sections aren't linked yet (insert in progress elsewhere).
+  const { data: sameTitle } = await supabase
+    .from('skyline_form_steps')
+    .select('id')
+    .eq('form_id', formId)
+    .eq('title', rowLabel)
+    .order('id', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (sameTitle) return (sameTitle as { id: number }).id;
+
+  const { data: taskStep, error: taskStepErr } = await supabase
     .from('skyline_form_steps')
     .insert({
       form_id: formId,
@@ -412,6 +438,13 @@ export async function insertAssessmentTaskStepWithSections(
     })
     .select('id')
     .single();
+  if (taskStepErr?.code === '23505') {
+    // DB unique guard (form_id, title) fired: another caller won the race — use their step.
+    const { data: winner } = await supabase
+      .from('skyline_form_steps').select('id').eq('form_id', formId).eq('title', rowLabel)
+      .order('id', { ascending: true }).limit(1).maybeSingle();
+    return winner ? (winner as { id: number }).id : null;
+  }
   if (!taskStep) return null;
   const taskStepId = (taskStep as { id: number }).id;
 
