@@ -69,6 +69,7 @@ import {
 import { useInstancePdfDownload } from '../hooks/useInstancePdfDownload';
 import { LivePdfGenerateConfirmDialog } from '../components/pdf/LivePdfGenerateConfirmDialog';
 import { AdminQuickEditModal } from '../components/admin/AdminQuickEditModal';
+import { mirrorExtensionDate, validateExtensionDate } from '../utils/assessmentDeadline';
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 const formatDDMMYYYY = (value: string | null): string => {
@@ -249,19 +250,21 @@ export const AdminStudentDetailsPage: React.FC = () => {
   const [addForms, setAddForms] = useState<Array<{ id: number; name: string; version: string | null }>>([]);
   const [addFormsLoading, setAddFormsLoading] = useState(false);
   const [addFormId, setAddFormId] = useState<string>('');
-  const [editingDateCell, setEditingDateCell] = useState<{ id: number; field: 'start' | 'end' } | null>(null);
+  const [editingDateCell, setEditingDateCell] = useState<{ id: number; field: 'start' | 'end' | 'extension' } | null>(null);
   const [savingDateId, setSavingDateId] = useState<number | null>(null);
-  const [dateDrafts, setDateDrafts] = useState<Record<number, { start?: string | null; end?: string | null }>>({});
+  const [dateDrafts, setDateDrafts] = useState<Record<number, { start?: string | null; end?: string | null; extension?: string | null }>>({});
   const [massApplying, setMassApplying] = useState(false);
   const [endDateResetConfirm, setEndDateResetConfirm] = useState<{
     row: SubmittedInstanceRow;
     nextStart: string | null;
     nextEnd: string | null;
+    extensionPatch: { extension_date: string | null } | null;
   } | null>(null);
   const endDateResetPendingRef = useRef<{
     row: SubmittedInstanceRow;
     nextStart: string | null;
     nextEnd: string | null;
+    extensionPatch: { extension_date: string | null } | null;
   } | null>(null);
   const [deleteStudentOpen, setDeleteStudentOpen] = useState(false);
   const [deletingStudent, setDeletingStudent] = useState(false);
@@ -664,24 +667,58 @@ export const AdminStudentDetailsPage: React.FC = () => {
     [dateDrafts]
   );
 
+  /** Extension shown/validated in the UI: an explicit draft, else what the DB trigger will make of it when end moves. */
+  const getEffectiveExtension = useCallback(
+    (row: SubmittedInstanceRow) => {
+      const d = dateDrafts[row.id];
+      if (d && 'extension' in d) return String(d.extension ?? '').trim();
+      return (
+        mirrorExtensionDate({
+          oldEnd: row.end_date,
+          newEnd: getEffectiveEnd(row),
+          extension: row.extension_date,
+        }) ?? ''
+      );
+    },
+    [dateDrafts, getEffectiveEnd]
+  );
+
+  /** Only an explicitly edited extension is sent; otherwise the DB trigger keeps it in step with end_date. */
+  const getExtensionPatch = useCallback(
+    (row: SubmittedInstanceRow): { extension_date: string | null } | null => {
+      const d = dateDrafts[row.id];
+      if (!d || !('extension' in d)) return null;
+      const next = String(d.extension ?? '').trim() || null;
+      const current = String(row.extension_date ?? '').trim() || null;
+      return next === current ? null : { extension_date: next };
+    },
+    [dateDrafts]
+  );
+
   const hasRowDateChanges = useCallback(
     (row: SubmittedInstanceRow) => {
       const es = getEffectiveStart(row);
       const ee = getEffectiveEnd(row);
       const rs = String(row.start_date ?? '').trim();
       const re = String(row.end_date ?? '').trim();
-      return es !== rs || ee !== re;
+      return es !== rs || ee !== re || getExtensionPatch(row) !== null;
     },
-    [getEffectiveStart, getEffectiveEnd]
+    [getEffectiveStart, getEffectiveEnd, getExtensionPatch]
   );
 
   const executeApplyRowDates = useCallback(
-    async (row: SubmittedInstanceRow, nextStart: string | null, nextEnd: string | null, resetAttempts: boolean) => {
+    async (
+      row: SubmittedInstanceRow,
+      nextStart: string | null,
+      nextEnd: string | null,
+      resetAttempts: boolean,
+      extensionPatch: { extension_date: string | null } | null = null
+    ) => {
       try {
         setSavingDateId(row.id);
         await commitAssessmentDateChange(
           row.id,
-          { start_date: nextStart, end_date: nextEnd },
+          { start_date: nextStart, end_date: nextEnd, ...(extensionPatch ?? {}) },
           { resetAttempts }
         );
         if (resetAttempts) {
@@ -716,19 +753,25 @@ export const AdminStudentDetailsPage: React.FC = () => {
         toast.error('Start date cannot be later than end date');
         return;
       }
+      const extensionError = validateExtensionDate(nextEnd, getEffectiveExtension(row));
+      if (extensionError) {
+        toast.error(extensionError);
+        return;
+      }
+      const extensionPatch = getExtensionPatch(row);
       const sum = attemptSummaryByInstanceId[row.id];
       const attemptResults = sum
         ? [sum.final_attempt_1_result, sum.final_attempt_2_result, sum.final_attempt_3_result]
         : null;
       if (await resolveNeedsResetPrompt(row, nextEnd, attemptResults)) {
-        const pending = { row, nextStart, nextEnd };
+        const pending = { row, nextStart, nextEnd, extensionPatch };
         endDateResetPendingRef.current = pending;
         setEndDateResetConfirm(pending);
         return;
       }
-      await executeApplyRowDates(row, nextStart, nextEnd, false);
+      await executeApplyRowDates(row, nextStart, nextEnd, false, extensionPatch);
     },
-    [attemptSummaryByInstanceId, executeApplyRowDates, getEffectiveEnd, getEffectiveStart]
+    [attemptSummaryByInstanceId, executeApplyRowDates, getEffectiveEnd, getEffectiveExtension, getEffectiveStart, getExtensionPatch]
   );
 
   const confirmEndDateReset = useCallback(async () => {
@@ -736,7 +779,7 @@ export const AdminStudentDetailsPage: React.FC = () => {
     endDateResetPendingRef.current = null;
     setEndDateResetConfirm(null);
     if (!pending) return;
-    await executeApplyRowDates(pending.row, pending.nextStart, pending.nextEnd, true);
+    await executeApplyRowDates(pending.row, pending.nextStart, pending.nextEnd, true, pending.extensionPatch);
   }, [executeApplyRowDates]);
 
   const cancelEndDateReset = useCallback(() => {
@@ -758,6 +801,11 @@ export const AdminStudentDetailsPage: React.FC = () => {
           toast.error(`Skipped ${row.form_name ?? 'unit'}: start cannot be after end`);
           continue;
         }
+        const extensionError = validateExtensionDate(nextEnd, getEffectiveExtension(row));
+        if (extensionError) {
+          toast.error(`Skipped ${row.form_name ?? 'unit'}: ${extensionError}`);
+          continue;
+        }
         if (await resolveNeedsResetPrompt(row, nextEnd, attemptSummaryByInstanceId[row.id]
           ? [
               attemptSummaryByInstanceId[row.id].final_attempt_1_result,
@@ -768,7 +816,11 @@ export const AdminStudentDetailsPage: React.FC = () => {
           skippedReset++;
           continue;
         }
-        await commitAssessmentDateChange(row.id, { start_date: nextStart, end_date: nextEnd }, { resetAttempts: false });
+        await commitAssessmentDateChange(
+          row.id,
+          { start_date: nextStart, end_date: nextEnd, ...(getExtensionPatch(row) ?? {}) },
+          { resetAttempts: false }
+        );
         setDateDrafts((prev) => {
           const n = { ...prev };
           delete n[row.id];
@@ -789,7 +841,7 @@ export const AdminStudentDetailsPage: React.FC = () => {
     } finally {
       setMassApplying(false);
     }
-  }, [attemptSummaryByInstanceId, getEffectiveEnd, getEffectiveStart, hasRowDateChanges, loadAssessments]);
+  }, [attemptSummaryByInstanceId, getEffectiveEnd, getEffectiveExtension, getEffectiveStart, getExtensionPatch, hasRowDateChanges, loadAssessments]);
 
   const handleCopyLink = async (row: SubmittedInstanceRow) => {
     const role = row.role_context === 'trainer' ? 'trainer' : row.role_context === 'office' ? 'office' : 'student';
@@ -916,6 +968,9 @@ export const AdminStudentDetailsPage: React.FC = () => {
                             direction={assessmentSort.dir}
                             onToggle={() => toggleAssessmentSort('end')}
                           />
+                          <th className="hidden md:table-cell text-left px-3 py-2 font-semibold border-b border-[var(--border)] w-[120px] whitespace-nowrap">
+                            Extension
+                          </th>
                           <SortableTh
                             label="Progress"
                             className="text-left px-3 py-2 border-b border-[var(--border)] min-w-[220px]"
@@ -1001,6 +1056,7 @@ export const AdminStudentDetailsPage: React.FC = () => {
                             {
                               start_date: getEffectiveStart(row) || row.start_date,
                               end_date: getEffectiveEnd(row) || row.end_date,
+                              extension_date: getEffectiveExtension(row) || null,
                             },
                             accessRole
                           );
@@ -1041,6 +1097,11 @@ export const AdminStudentDetailsPage: React.FC = () => {
                                       <span>
                                         <span className="text-gray-500">End</span> {formatDDMMYYYY(getEffectiveEnd(row) || row.end_date)}
                                       </span>
+                                      {getEffectiveExtension(row) ? (
+                                        <span>
+                                          <span className="text-gray-500">Extension</span> {formatDDMMYYYY(getEffectiveExtension(row))}
+                                        </span>
+                                      ) : null}
                                     </div>
                                   </div>
                                 );
@@ -1101,6 +1162,46 @@ export const AdminStudentDetailsPage: React.FC = () => {
                                   disabled={savingDateId === row.id || massApplying}
                                 >
                                   {formatDDMMYYYY(getEffectiveEnd(row) || row.end_date)}
+                                </button>
+                              )}
+                            </td>
+                            <td
+                              className="hidden md:table-cell px-3 py-2 border-b border-[var(--border)] text-gray-700 align-top"
+                            >
+                              {editingDateCell?.id === row.id && editingDateCell.field === 'extension' ? (
+                                <DatePicker
+                                  value={getEffectiveExtension(row)}
+                                  onChange={(v) =>
+                                    setDateDrafts((prev) => ({
+                                      ...prev,
+                                      [row.id]: { ...prev[row.id], extension: v || null },
+                                    }))
+                                  }
+                                  compact
+                                  placement="below"
+                                  className="max-w-[160px]"
+                                  disabled={savingDateId === row.id || massApplying}
+                                  minDate={getEffectiveEnd(row) || undefined}
+                                />
+                              ) : getEffectiveExtension(row) ? (
+                                <button
+                                  type="button"
+                                  className="text-gray-700 hover:underline"
+                                  onClick={() => setEditingDateCell({ id: row.id, field: 'extension' })}
+                                  disabled={savingDateId === row.id || massApplying}
+                                  title="Edit extension date (the deadline is the extension when set)"
+                                >
+                                  {formatDDMMYYYY(getEffectiveExtension(row))}
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="text-xs text-gray-400 hover:text-[var(--brand)] hover:underline"
+                                  onClick={() => setEditingDateCell({ id: row.id, field: 'extension' })}
+                                  disabled={savingDateId === row.id || massApplying}
+                                  title="Add an extension date (later deadline)"
+                                >
+                                  — <span className="ml-1">+ Add extension</span>
                                 </button>
                               )}
                             </td>

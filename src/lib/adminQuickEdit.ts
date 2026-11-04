@@ -56,6 +56,8 @@ export type QuickEditContext = {
   formVersion: string | null;
   startDate: string | null;
   endDate: string | null;
+  /** Instance-level optional later deadline (not a form answer; never printed in PDFs). */
+  extensionDate?: string | null;
   statusLabel: string;
   workflowStatus: string | null;
   trainerName: string | null;
@@ -260,6 +262,7 @@ function buildContext(row: SubmittedInstanceRow, identity: Awaited<ReturnType<ty
     formVersion: row.form_version,
     startDate: row.start_date,
     endDate: row.end_date,
+    extensionDate: row.extension_date ?? null,
     statusLabel: getInstanceWorkflowLabel({
       status: row.status,
       role_context: row.role_context,

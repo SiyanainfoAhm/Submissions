@@ -1,6 +1,7 @@
 import {
   extendInstanceAccessTokensToDate,
   fetchAssessmentSummaries,
+  syncStudentTokenExpiryToDeadline,
   updateFormInstanceDates,
   type SubmittedInstanceRow,
 } from '../lib/formEngine';
@@ -96,11 +97,15 @@ export async function resolveNeedsResetPrompt(
 
 export async function commitAssessmentDateChange(
   instanceId: number,
-  dates: { start_date: string | null; end_date: string | null },
+  dates: { start_date: string | null; end_date: string | null; extension_date?: string | null },
   opts: { resetAttempts?: boolean }
 ): Promise<void> {
   await updateFormInstanceDates(instanceId, dates, { resetAttempts: opts.resetAttempts });
   if (dates.end_date) {
+    // Also follows the effective deadline (a later extension keeps the link open past end_date).
     await extendInstanceAccessTokensToDate(instanceId, 'student', dates.end_date);
+  } else if ('extension_date' in dates) {
+    // Extension-only change: never rewrites end_date, just realigns the student link expiry to the new deadline.
+    await syncStudentTokenExpiryToDeadline(instanceId);
   }
 }

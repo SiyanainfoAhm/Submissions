@@ -8,6 +8,7 @@ import { Select } from '../components/ui/Select';
 import { DatePicker } from '../components/ui/DatePicker';
 import { Loader } from '../components/ui/Loader';
 import { toast } from '../utils/toast';
+import { hasActiveExtension } from '../utils/assessmentDeadline';
 import { AdminListPagination } from '../components/admin/AdminListPagination';
 import { getAdminDashboardStatsV2, getOrIssueInstanceAccessLink, listAdminDashboardInstancesPaged, listBatches, type AdminDashboardStatsV2, type SubmittedInstanceRow, type Batch } from '../lib/formEngine';
 
@@ -518,7 +519,12 @@ export const AdminDashboardPage: React.FC = () => {
                         </td>
                         <td className="py-2.5 px-3 text-gray-900 break-words">{r.form_name || '—'}</td>
                         <td className="py-2.5 px-3 text-gray-700 whitespace-nowrap">{formatDate(r.start_date)}</td>
-                        <td className="py-2.5 px-3 text-gray-700 whitespace-nowrap">{formatDate(r.end_date)}</td>
+                        <td className="py-2.5 px-3 text-gray-700 whitespace-nowrap">
+                          {formatDate(r.end_date)}
+                          {hasActiveExtension(r) ? (
+                            <div className="text-xs text-amber-700">Extended to {formatDate(r.extension_date ?? null)}</div>
+                          ) : null}
+                        </td>
                         <td className="py-2.5 px-3 text-gray-700 whitespace-nowrap">{workflowLabel(r)}</td>
                       </tr>
                     ))

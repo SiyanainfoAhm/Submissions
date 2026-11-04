@@ -163,6 +163,7 @@ const getExportStatusText = (row: SubmittedInstanceRow, rawAttemptResults: Attem
     row: {
       start_date: row.start_date,
       end_date: row.end_date,
+      extension_date: row.extension_date ?? null,
       did_not_attempt: (row as unknown as { did_not_attempt?: boolean | null }).did_not_attempt ?? null,
       no_attempt_rollovers: (row as unknown as { no_attempt_rollovers?: number | null }).no_attempt_rollovers ?? null,
       status: row.status,
@@ -176,7 +177,7 @@ const getExportStatusText = (row: SubmittedInstanceRow, rawAttemptResults: Attem
     submittedAt: row.submitted_at ?? null,
   });
   const win = withinInstanceAccessWindow(
-    { start_date: row.start_date, end_date: row.end_date },
+    { start_date: row.start_date, end_date: row.end_date, extension_date: row.extension_date ?? null },
     accessRole
   );
   const studentOpenDisabled = accessRole === 'student' && (!win.ok || ui.disabled);
@@ -227,6 +228,7 @@ const getDirectoryRowClass = (row: SubmittedInstanceRow, trainerHighlightCourseI
       row: {
         start_date: row.start_date,
         end_date: row.end_date,
+        extension_date: row.extension_date ?? null,
         did_not_attempt: (row as unknown as { did_not_attempt?: boolean | null }).did_not_attempt ?? null,
         status: row.status,
         role_context: row.role_context,

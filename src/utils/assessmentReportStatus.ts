@@ -1,4 +1,5 @@
 import { calculateAssessmentDisplayStatus, melDateString } from './assessmentRowUi';
+import { getEffectiveEndDate } from './assessmentDeadline';
 
 export type AssessmentReportStatus = 'Completed' | 'In Progress' | 'Failed';
 
@@ -6,6 +7,7 @@ export type AssessmentReportStatus = 'Completed' | 'In Progress' | 'Failed';
 export function getAssessmentReportStatus(row: {
   status?: string | null;
   end_date?: string | null;
+  extension_date?: string | null;
   did_not_attempt?: boolean | null;
   no_attempt_rollovers?: number | null;
 }): AssessmentReportStatus {
@@ -17,7 +19,7 @@ export function getAssessmentReportStatus(row: {
   if (display.terminalDidNotAttempt) {
     return 'Failed';
   }
-  const end = String(row.end_date ?? '').trim();
+  const end = getEffectiveEndDate(row);
   if (end) {
     const today = melDateString();
     if (today > end) return 'Failed';
