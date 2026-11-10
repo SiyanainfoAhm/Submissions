@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { Plus, Pencil, Users, CalendarRange, Trash2 } from 'lucide-react';
+import { Plus, Pencil, Users, CalendarRange, Trash2, KeyRound } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import {
   listBatchesPaged,
@@ -16,6 +16,7 @@ import {
   deleteBatchSuperadmin,
   fetchBatchTrainerIds,
   formatBatchTrainersLabel,
+  setBatchTrainerStudentLogin,
 } from '../lib/formEngine';
 import type { Batch, Student } from '../lib/formEngine';
 import { Card } from '../components/ui/Card';
@@ -33,6 +34,8 @@ const BATCH_PAGE_SIZE = 20;
 export const AdminBatchesPage: React.FC = () => {
   const { user } = useAuth();
   const viewerIsSuperadmin = user?.role === 'superadmin';
+  /** Only admins see/change the "trainers may log in as students" switch (also enforced on the server). */
+  const viewerIsAdmin = user?.role === 'admin' || user?.role === 'superadmin';
 
   const [batches, setBatches] = useState<Batch[]>([]);
   const [totalBatches, setTotalBatches] = useState(0);
@@ -42,8 +45,19 @@ export const AdminBatchesPage: React.FC = () => {
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
-  const [draft, setDraft] = useState({ name: '', trainer_ids: [] as number[], course_id: '' });
-  const [editDraft, setEditDraft] = useState<{ name: string; trainer_ids: number[]; course_id: string; student_ids: number[] } | null>(null);
+  const [draft, setDraft] = useState({
+    name: '',
+    trainer_ids: [] as number[],
+    course_id: '',
+    allow_trainer_student_login: false,
+  });
+  const [editDraft, setEditDraft] = useState<{
+    name: string;
+    trainer_ids: number[];
+    course_id: string;
+    student_ids: number[];
+    allow_trainer_student_login: boolean;
+  } | null>(null);
   const [, setEditStudents] = useState<Student[]>([]);
   const [activeCountByBatchId, setActiveCountByBatchId] = useState<Record<number, number>>({});
   const [deletingBatchId, setDeletingBatchId] = useState<number | null>(null);
@@ -240,12 +254,18 @@ export const AdminBatchesPage: React.FC = () => {
       trainer_ids: draft.trainer_ids,
       course_id: courseId,
     });
+    let flagError: string | null = null;
+    if (created && viewerIsAdmin && draft.allow_trainer_student_login) {
+      const flagRes = await setBatchTrainerStudentLogin(created.id, true);
+      if (!flagRes.ok) flagError = flagRes.message;
+    }
     setCreating(false);
     if (created) {
       await loadBatches(currentPage);
-      setDraft({ name: '', trainer_ids: [], course_id: '' });
+      setDraft({ name: '', trainer_ids: [], course_id: '', allow_trainer_student_login: false });
       setIsCreateOpen(false);
-      toast.success('Batch added');
+      if (flagError) toast.error(`Batch added, but trainer login was not switched on: ${flagError}`);
+      else toast.success('Batch added');
     } else {
       toast.error('Failed to add batch');
     }
@@ -263,6 +283,7 @@ export const AdminBatchesPage: React.FC = () => {
       trainer_ids: editingBatch.trainer_ids?.length ? [...editingBatch.trainer_ids] : [editingBatch.trainer_id],
       course_id: editingBatch.course_id != null ? String(editingBatch.course_id) : '',
       student_ids: [],
+      allow_trainer_student_login: Boolean(editingBatch.allow_trainer_student_login),
     });
     void fetchBatchTrainerIds(editingBatch.id).then((trainerIds) => {
       setEditDraft((p) => (p ? { ...p, trainer_ids: trainerIds.length > 0 ? trainerIds : p.trainer_ids } : null));
@@ -297,8 +318,19 @@ export const AdminBatchesPage: React.FC = () => {
       course_id: courseId,
     });
     const assignments = await updateBatchStudentAssignments(editingId, editDraft.student_ids);
+    let flagError: string | null = null;
+    if (
+      viewerIsAdmin &&
+      editDraft.allow_trainer_student_login !== Boolean(editingBatch?.allow_trainer_student_login)
+    ) {
+      const flagRes = await setBatchTrainerStudentLogin(editingId, editDraft.allow_trainer_student_login);
+      if (!flagRes.ok) flagError = flagRes.message;
+    }
     setSavingEdit(false);
-    if (batchUpdated && assignments.ok) {
+    if (batchUpdated && assignments.ok && flagError) {
+      await loadBatches(currentPage);
+      toast.error(`Batch saved, but the trainer login setting was not changed: ${flagError}`);
+    } else if (batchUpdated && assignments.ok) {
       await loadBatches(currentPage);
       setEditingId(null);
       toast.success('Batch updated');
@@ -360,6 +392,15 @@ export const AdminBatchesPage: React.FC = () => {
                         >
                           {batch.name}
                         </Link>
+                        {batch.allow_trainer_student_login ? (
+                          <span
+                            className="ml-2 inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800 align-middle"
+                            title="Trainers of this batch can log in as its students"
+                          >
+                            <KeyRound className="h-3 w-3" />
+                            Trainer login
+                          </span>
+                        ) : null}
                         <div className="mt-1 text-sm text-gray-600">
                           <span className="font-medium text-gray-500">Course: </span>
                           {batch.course_name ?? '—'}
@@ -418,6 +459,15 @@ export const AdminBatchesPage: React.FC = () => {
                           >
                             {batch.name}
                           </Link>
+                          {batch.allow_trainer_student_login ? (
+                            <span
+                              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800"
+                              title="Trainers of this batch can log in as its students"
+                            >
+                              <KeyRound className="h-3 w-3" />
+                              Trainer login
+                            </span>
+                          ) : null}
                         </div>
                       </td>
                       <td className="px-4 py-3 border-b border-[var(--border)] text-gray-700">
@@ -506,6 +556,25 @@ export const AdminBatchesPage: React.FC = () => {
             required
           />
           <p className="text-xs text-gray-500 -mt-2">The first selected trainer is the primary contact for notifications.</p>
+          {viewerIsAdmin ? (
+            <label className="flex items-start gap-3 rounded-lg border border-[var(--border)] bg-gray-50 p-3 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300"
+                checked={draft.allow_trainer_student_login}
+                onChange={(e) => setDraft((p) => ({ ...p, allow_trainer_student_login: e.target.checked }))}
+              />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium text-gray-700">
+                  Allow trainers to log in as students in this batch
+                </span>
+                <span className="block text-xs text-gray-500 mt-0.5">
+                  Assigned trainers can open student accounts in this batch to help with submissions. Every login is
+                  recorded.
+                </span>
+              </span>
+            </label>
+          ) : null}
           <label className="block">
             <span className="text-sm font-medium text-gray-700">Course *</span>
             <SelectAsync
@@ -559,6 +628,27 @@ export const AdminBatchesPage: React.FC = () => {
               required
             />
             <p className="text-xs text-gray-500">The first selected trainer is the primary contact for notifications.</p>
+            {viewerIsAdmin ? (
+              <label className="flex items-start gap-3 rounded-lg border border-[var(--border)] bg-gray-50 p-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300"
+                  checked={editDraft.allow_trainer_student_login}
+                  onChange={(e) =>
+                    setEditDraft((p) => (p ? { ...p, allow_trainer_student_login: e.target.checked } : null))
+                  }
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium text-gray-700">
+                    Allow trainers to log in as students in this batch
+                  </span>
+                  <span className="block text-xs text-gray-500 mt-0.5">
+                    Assigned trainers can open student accounts in this batch to help with submissions. Every login is
+                    recorded.
+                  </span>
+                </span>
+              </label>
+            ) : null}
             <label className="block">
               <span className="text-sm font-medium text-gray-700">Course *</span>
               <SelectAsync

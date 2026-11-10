@@ -3,6 +3,7 @@ import type { AppUser } from '../lib/formEngine';
 import {
   clearStaffImpersonationSession,
   consumeStaffImpersonationPendingIfEligible,
+  endStaffSession,
   fetchUserLoginRights,
   getEffectiveStoredUser,
   getStoredUser,
@@ -66,6 +67,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = () => {
+    void endStaffSession();
     clearStaffImpersonationSession();
     setUser(null);
     setStoredUser(null);

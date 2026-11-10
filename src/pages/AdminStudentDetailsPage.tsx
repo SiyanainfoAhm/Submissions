@@ -57,7 +57,7 @@ import {
 import { StudentQualificationsPanel } from '../components/students/StudentQualificationsPanel';
 import { StudentEditModal } from '../components/students/StudentEditModal';
 import type { Student, SubmittedInstanceRow } from '../lib/formEngine';
-import { STUDENT_DASHBOARD_AUTH_STORAGE_KEY } from '../lib/formEngine';
+import { STUDENT_DASHBOARD_AUTH_STORAGE_KEY, canLoginAsStudent, loginAsStudentViaServer } from '../lib/formEngine';
 import { FormDocumentsPanel } from '../components/documents/FormDocumentsPanel';
 import { cn } from '../components/utils/cn';
 import { formatMelbourneDateTime } from '../utils/melbourneTime';
@@ -217,6 +217,21 @@ export const AdminStudentDetailsPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
   const viewerIsSuperadmin = user?.role === 'superadmin';
+  const [trainerMayLoginAsStudent, setTrainerMayLoginAsStudent] = useState(false);
+  const [loggingInAsStudent, setLoggingInAsStudent] = useState(false);
+  const viewerRole = user?.role;
+  const studentIdNum = Number(studentId);
+  useEffect(() => {
+    setTrainerMayLoginAsStudent(false);
+    if (viewerRole !== 'trainer' || !Number.isFinite(studentIdNum) || studentIdNum <= 0) return;
+    let cancelled = false;
+    void canLoginAsStudent(studentIdNum).then((allowed) => {
+      if (!cancelled) setTrainerMayLoginAsStudent(allowed);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [viewerRole, studentIdNum]);
   const viewerCanManagePaymentPlans = canManagePaymentPlans(user);
   const sid = Number(studentId);
   /** One request loads all assessments for this student (typical max ~34). */
@@ -1408,16 +1423,30 @@ export const AdminStudentDetailsPage: React.FC = () => {
   };
 
   const canDeleteStudent = !!student && viewerIsSuperadmin;
-  const viewerCanLoginAsStudent = viewerIsSuperadmin || Boolean(user?.can_login_as_student);
+  // Button visibility is convenience only; skyline_login_as_student re-checks on the server.
+  // Admins keep the existing rule; trainers are shown the button only when the server says
+  // this student is in a batch they train with "allow trainers to log in as students" on.
+  const viewerIsAdminWithLoginRight =
+    viewerIsSuperadmin || (user?.role === 'admin' && Boolean(user?.can_login_as_student));
+  const viewerCanLoginAsStudent = viewerIsAdminWithLoginRight || trainerMayLoginAsStudent;
 
   const loginAsStudent = async () => {
-    if (!viewerCanLoginAsStudent || !student || !Number.isFinite(sid) || sid <= 0) return;
+    if (!viewerCanLoginAsStudent || !student || !Number.isFinite(sid) || sid <= 0 || loggingInAsStudent) return;
+    setLoggingInAsStudent(true);
+    const res = await loginAsStudentViaServer(sid);
+    setLoggingInAsStudent(false);
+    if (!res.ok) {
+      toast.error(res.message);
+      if (res.reason === 'forbidden') setTrainerMayLoginAsStudent(false);
+      return;
+    }
     // Store student dashboard session. Keep staff session intact (opens in new tab).
     sessionStorage.setItem(
       STUDENT_DASHBOARD_AUTH_STORAGE_KEY,
-      JSON.stringify({ studentId: sid, email: student.email, at: Date.now(), by: user?.id ?? null })
+      JSON.stringify({ studentId: res.studentId, email: res.email || student.email, at: Date.now(), by: user?.id ?? null })
     );
-    window.open('/student/dashboard', '_blank');
+    const opened = window.open('/student/dashboard', '_blank');
+    if (!opened) toast.error('Your browser blocked the new tab. Allow pop-ups for this site and try again.');
   };
 
   const confirmDeleteStudent = async () => {
@@ -1556,9 +1585,10 @@ export const AdminStudentDetailsPage: React.FC = () => {
                           size="sm"
                           className="w-full border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                           onClick={() => void loginAsStudent()}
-                          title="Switch to student dashboard for this student"
+                          disabled={loggingInAsStudent}
+                          title="Open the student dashboard for this student (every login is recorded)"
                         >
-                          Login as student
+                          {loggingInAsStudent ? 'Opening…' : 'Login as student'}
                         </Button>
                       ) : null}
                       {canDeleteStudent ? (

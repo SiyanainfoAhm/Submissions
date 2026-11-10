@@ -2518,6 +2518,122 @@ export function setStoredUser(user: AppUser | null): void {
   }
 }
 
+/**
+ * Server-issued staff session token (returned by the login RPCs, valid 12 hours).
+ * It is what proves who the caller is to the SECURITY DEFINER RPCs below — the server
+ * never trusts a user id sent by the client. Kept apart from the stored user so the
+ * superadmin "open as user" preview never changes whose token is sent.
+ */
+const STAFF_SESSION_TOKEN_KEY = 'skyline_staff_session_token_v1';
+
+export function getStaffSessionToken(): string | null {
+  try {
+    return localStorage.getItem(STAFF_SESSION_TOKEN_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+export function setStaffSessionToken(token: string | null): void {
+  try {
+    if (token) localStorage.setItem(STAFF_SESSION_TOKEN_KEY, token);
+    else localStorage.removeItem(STAFF_SESSION_TOKEN_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/** Logout: delete the session row on the server, then forget the token locally. */
+export async function endStaffSession(): Promise<void> {
+  const token = getStaffSessionToken();
+  setStaffSessionToken(null);
+  if (!token) return;
+  try {
+    await supabase.rpc('skyline_logout', { p_token: token });
+  } catch (e) {
+    console.error('skyline_logout error', e);
+  }
+}
+
+export type StaffRpcFailure = {
+  ok: false;
+  /** session = sign in again; forbidden = server said 403; error = anything else. */
+  reason: 'session' | 'forbidden' | 'error';
+  message: string;
+};
+
+const STAFF_SESSION_MISSING: StaffRpcFailure = {
+  ok: false,
+  reason: 'session',
+  message: 'Your session has expired. Please sign out and sign in again.',
+};
+
+function staffRpcFailure(
+  error: { code?: string; message?: string } | null,
+  status: number,
+  forbiddenMessage: string
+): StaffRpcFailure {
+  const code = String(error?.code ?? '');
+  if (status === 401 || code === 'PT401') {
+    setStaffSessionToken(null);
+    return STAFF_SESSION_MISSING;
+  }
+  if (status === 403 || code === 'PT403') {
+    return { ok: false, reason: 'forbidden', message: forbiddenMessage };
+  }
+  return { ok: false, reason: 'error', message: 'Something went wrong. Please try again.' };
+}
+
+/** UI convenience only: should "Login as student" be shown? The server re-checks on click. */
+export async function canLoginAsStudent(studentId: number): Promise<boolean> {
+  const token = getStaffSessionToken();
+  const sid = Number(studentId);
+  if (!token || !Number.isFinite(sid) || sid <= 0) return false;
+  const { data, error } = await supabase.rpc('skyline_can_login_as_student', {
+    p_token: token,
+    p_student_id: sid,
+  });
+  if (error) return false;
+  return data === true;
+}
+
+/** Server-side authorisation for "Login as student". Writes an impersonation_logs row on success. */
+export async function loginAsStudentViaServer(
+  studentId: number
+): Promise<{ ok: true; studentId: number; email: string } | StaffRpcFailure> {
+  const token = getStaffSessionToken();
+  if (!token) return STAFF_SESSION_MISSING;
+  const { data, error, status } = await supabase.rpc('skyline_login_as_student', {
+    p_token: token,
+    p_student_id: Number(studentId),
+  });
+  if (error) {
+    return staffRpcFailure(error, status, "You don't have permission to log in as this student.");
+  }
+  const row = ((data as Array<Record<string, unknown>> | null) || [])[0];
+  const sid = Number(row?.student_id);
+  if (!row || !Number.isFinite(sid) || sid <= 0) {
+    return { ok: false, reason: 'error', message: 'Something went wrong. Please try again.' };
+  }
+  return { ok: true, studentId: sid, email: String(row.student_email ?? '') };
+}
+
+/** Admin-only (enforced on the server): switch "trainers may log in as students" for a batch. */
+export async function setBatchTrainerStudentLogin(
+  batchId: number,
+  allow: boolean
+): Promise<{ ok: true } | StaffRpcFailure> {
+  const token = getStaffSessionToken();
+  if (!token) return STAFF_SESSION_MISSING;
+  const { error, status } = await supabase.rpc('skyline_set_batch_trainer_student_login', {
+    p_token: token,
+    p_batch_id: Number(batchId),
+    p_allow: Boolean(allow),
+  });
+  if (error) return staffRpcFailure(error, status, 'Only an admin can change this setting.');
+  return { ok: true };
+}
+
 /** Load impersonation rights from DB (cached auth may predate these columns). */
 export async function fetchUserLoginRights(
   userId: number
@@ -2572,6 +2688,7 @@ export async function loginWithOtp(email: string, otp: string): Promise<AppUser 
   const rows = (data as Array<Record<string, unknown>>) || [];
   const row = rows[0];
   if (!row || !row.id) return null;
+  setStaffSessionToken(row.session_token ? String(row.session_token) : null);
   return {
     id: Number(row.id),
     full_name: String(row.full_name ?? ''),
@@ -2585,51 +2702,12 @@ export async function loginWithOtp(email: string, otp: string): Promise<AppUser 
   };
 }
 
-export async function loginWithEmailPassword(email: string, password: string): Promise<AppUser | null> {
-  const { data, error } = await supabase.rpc('skyline_login', {
-    p_email: email.trim(),
-    p_password: password || null,
-  });
-  if (error) {
-    console.error('login error', error);
-    return null;
-  }
-  const rows = (data as Array<Record<string, unknown>>) || [];
-  const row = rows[0];
-  if (!row || !row.id) return null;
-  const user: AppUser = {
-    id: Number(row.id),
-    full_name: String(row.full_name ?? ''),
-    email: String(row.email ?? ''),
-    phone: row.phone ? String(row.phone) : null,
-    status: row.status ? String(row.status) : null,
-    role: (row.role as AppUserRole) ?? 'trainer',
-    can_login_as_student: Boolean((row as { can_login_as_student?: unknown }).can_login_as_student),
-    can_login_as_trainer: Boolean((row as { can_login_as_trainer?: unknown }).can_login_as_trainer),
-    can_view_finance_reports: Boolean((row as { can_view_finance_reports?: unknown }).can_view_finance_reports),
-  };
-  return user;
-}
-
-export async function changePassword(
-  userId: number,
-  currentPassword: string,
-  newPassword: string
-): Promise<{ success: boolean; message: string }> {
-  const { data, error } = await supabase.rpc('skyline_change_password', {
-    p_user_id: userId,
-    p_current_password: currentPassword,
-    p_new_password: newPassword,
-  });
-  if (error) {
-    console.error('changePassword error', error);
-    return { success: false, message: error.message || 'Failed to change password.' };
-  }
-  const rows = (data as Array<{ success: boolean; message: string }>) || [];
-  const row = rows[0];
-  if (!row) return { success: false, message: 'Unexpected response.' };
-  return { success: !!row.success, message: row.message || '' };
-}
+/**
+ * Columns clients may read from skyline_users. password_hash is deliberately absent: anon/authenticated
+ * have no SELECT on it, so select("*") on this table fails. Add new columns here AND grant SELECT on them.
+ */
+const STAFF_USER_COLUMNS =
+  'id, full_name, email, phone, status, role, is_master, can_login_as_student, can_login_as_trainer, can_view_finance_reports, created_at, updated_at, updated_by';
 
 function mapTrainerRow(row: Record<string, unknown>): Trainer {
   return {
@@ -2661,7 +2739,7 @@ function mapUserRow(row: Record<string, unknown>): UserRow {
 export async function listTrainers(): Promise<Trainer[]> {
   const { data, error } = await supabase
     .from('skyline_users')
-    .select('*')
+    .select(STAFF_USER_COLUMNS)
     .order('created_at', { ascending: false });
   if (error) {
     console.error('listTrainers error', error);
@@ -2696,7 +2774,7 @@ export async function listUsersPaged(
   const to = from + pageSize - 1;
   let query = supabase
     .from('skyline_users')
-    .select('*', { count: 'exact' })
+    .select(STAFF_USER_COLUMNS, { count: 'exact' })
     .order('created_at', { ascending: false })
     .or('is_master.eq.false,is_master.is.null');
   if (roleFilter) query = query.eq('role', roleFilter);
@@ -2723,7 +2801,7 @@ export async function listUsersPaged(
 export async function listUsersForBatchAssignment(): Promise<UserRow[]> {
   const { data, error } = await supabase
     .from('skyline_users')
-    .select('*')
+    .select(STAFF_USER_COLUMNS)
     .in('role', ['trainer', 'admin', 'superadmin'])
     .eq('status', 'active')
     .or('is_master.eq.false,is_master.is.null')
@@ -2744,7 +2822,7 @@ export async function listUsersForBatchAssignmentPaged(
   const to = from + pageSize - 1;
   let query = supabase
     .from('skyline_users')
-    .select('*', { count: 'exact' })
+    .select(STAFF_USER_COLUMNS, { count: 'exact' })
     .in('role', ['trainer', 'admin', 'superadmin'])
     .eq('status', 'active')
     .or('is_master.eq.false,is_master.is.null')
@@ -2775,7 +2853,7 @@ export async function createTrainer(input: CreateTrainerInput): Promise<Trainer 
       phone: input.phone?.trim() || null,
       status: input.status?.trim() || 'active',
     })
-    .select('*')
+    .select(STAFF_USER_COLUMNS)
     .single();
   if (error) {
     console.error('createTrainer error', error);
@@ -2836,7 +2914,7 @@ export async function updateUser(id: number, input: UpdateUserInput): Promise<Us
     .from('skyline_users')
     .update(payload)
     .eq('id', id)
-    .select('*')
+    .select(STAFF_USER_COLUMNS)
     .single();
   if (error) {
     console.error('updateUser error', error);
@@ -2873,6 +2951,8 @@ export interface Batch {
   course_id: number | null;
   course_name: string | null;
   created_at: string;
+  /** Admin-only switch: assigned trainers may use "Login as student" for this batch's students. */
+  allow_trainer_student_login?: boolean;
 }
 
 /** Comma-separated trainer names for batch directory UI. */
@@ -4268,7 +4348,7 @@ export async function listTrainerBatches(userId: number): Promise<Batch[]> {
   if (batchIds.length === 0) return [];
   const { data, error } = await supabase
     .from('skyline_batches')
-    .select('id, name, trainer_id, course_id, created_at')
+    .select('id, name, trainer_id, course_id, created_at, allow_trainer_student_login')
     .in('id', batchIds)
     .order('name', { ascending: true });
   if (error) {
@@ -4372,7 +4452,7 @@ export async function listBatches(): Promise<Batch[]> {
     return await dedupeSupabaseRead('skyline_batches:list', 120_000, async () => {
       const { data, error } = await supabase
         .from('skyline_batches')
-        .select('id, name, trainer_id, course_id, created_at')
+        .select('id, name, trainer_id, course_id, created_at, allow_trainer_student_login')
         .order('name', { ascending: true })
         .limit(500);
       if (error) {
@@ -4397,7 +4477,7 @@ export async function listBatchesPaged(
   const to = from + pageSize - 1;
   let query = supabase
     .from('skyline_batches')
-    .select('id, name, trainer_id, course_id, created_at', { count: 'exact' })
+    .select('id, name, trainer_id, course_id, created_at, allow_trainer_student_login', { count: 'exact' })
     .order('name', { ascending: true });
   if (search && search.trim()) {
     query = query.ilike('name', `%${search.trim()}%`);
@@ -4432,7 +4512,7 @@ export async function getBatchById(id: number): Promise<Batch | null> {
   if (!Number.isFinite(bid) || bid <= 0) return null;
   const { data, error } = await supabase
     .from('skyline_batches')
-    .select('id, name, trainer_id, course_id, created_at')
+    .select('id, name, trainer_id, course_id, created_at, allow_trainer_student_login')
     .eq('id', bid)
     .maybeSingle();
   if (error) {
@@ -4547,7 +4627,7 @@ export async function listBatchesForCourse(courseId: number): Promise<Batch[]> {
   if (!courseId || !Number.isFinite(courseId)) return [];
   const { data, error } = await supabase
     .from('skyline_batches')
-    .select('id, name, trainer_id, course_id, created_at')
+    .select('id, name, trainer_id, course_id, created_at, allow_trainer_student_login')
     .eq('course_id', courseId)
     .order('name', { ascending: true });
   if (error) {
@@ -4611,6 +4691,7 @@ function mapBatchRow(row: Record<string, unknown>, trainerName: string | null, c
     course_id: row.course_id != null ? Number(row.course_id) : null,
     course_name: courseName,
     created_at: String(row.created_at ?? ''),
+    allow_trainer_student_login: Boolean(row.allow_trainer_student_login),
   };
 }
 
@@ -4627,7 +4708,7 @@ export async function createBatch(input: CreateBatchInput): Promise<Batch | null
       course_id: input.course_id ?? null,
       created_by,
     })
-    .select('id, name, trainer_id, course_id, created_at')
+    .select('id, name, trainer_id, course_id, created_at, allow_trainer_student_login')
     .single();
   if (error) {
     console.error('createBatch error', error);
@@ -4659,7 +4740,7 @@ export async function updateBatch(id: number, input: UpdateBatchInput): Promise<
     .from('skyline_batches')
     .update(payload)
     .eq('id', id)
-    .select('id, name, trainer_id, course_id, created_at')
+    .select('id, name, trainer_id, course_id, created_at, allow_trainer_student_login')
     .single();
   if (error) {
     console.error('updateBatch error', error);
