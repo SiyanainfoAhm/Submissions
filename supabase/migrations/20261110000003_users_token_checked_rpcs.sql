@@ -2,7 +2,7 @@
 --
 -- Adds token-checked RPCs for creating and updating staff users. Nothing the deployed
 -- frontend uses is changed or removed here; the old paths are closed in
--- supabase/pending/20261110000005_revoke_client_writes_on_users.sql once the new frontend is live.
+-- supabase/pending/20261110000006_revoke_client_writes_on_users.sql once the new frontend is live.
 --
 -- The one removal: skyline_admin_set_password has no caller in any app and password login
 -- is gone, so clients lose EXECUTE now.

@@ -22,7 +22,7 @@ with `skyline_staff_from_token`). The items below use that token to close what i
 
 ## 0. Pending: the `skyline_users` revoke (do this first)
 
-`supabase/pending/20261110000005_revoke_client_writes_on_users.sql` is written but **not applied**.
+`supabase/pending/20261110000006_revoke_client_writes_on_users.sql` is written but **not applied**.
 It revokes client INSERT / UPDATE / DELETE on `skyline_users` and EXECUTE on the old
 `skyline_create_user`. Until it runs, a trainer can still make themselves an admin with one
 direct table write.

@@ -2594,6 +2594,18 @@ function staffRpcFailure(
   return { ok: false, reason: 'error', message: 'Something went wrong. Please try again.' };
 }
 
+/**
+ * While a super admin is "Previewing as <user>", the session token is still the super admin's.
+ * Trainer RPCs take p_as_user_id so the server answers for the previewed user instead. The
+ * server accepts it only from a super admin (anyone else gets 403), and login-as-student is
+ * still logged with the super admin as the actor.
+ */
+function previewAsUserParam(): { p_as_user_id?: number } {
+  if (!isStaffImpersonationActive()) return {};
+  const id = Number(parseStaffImpersonationSession()?.user?.id);
+  return Number.isFinite(id) && id > 0 ? { p_as_user_id: id } : {};
+}
+
 /** UI convenience only: should "Login as student" be shown? The server re-checks on click. */
 export async function canLoginAsStudent(studentId: number): Promise<boolean> {
   const token = getStaffSessionToken();
@@ -2602,6 +2614,7 @@ export async function canLoginAsStudent(studentId: number): Promise<boolean> {
   const { data, error } = await supabase.rpc('skyline_can_login_as_student', {
     p_token: token,
     p_student_id: sid,
+    ...previewAsUserParam(),
   });
   if (error) return false;
   return data === true;
@@ -2616,6 +2629,7 @@ export async function loginAsStudentViaServer(
   const { data, error, status } = await supabase.rpc('skyline_login_as_student', {
     p_token: token,
     p_student_id: Number(studentId),
+    ...previewAsUserParam(),
   });
   if (error) {
     return staffRpcFailure(error, status, "You don't have permission to log in as this student.");
@@ -2713,6 +2727,7 @@ export async function listMyStudentsForTrainer(
     p_search: search?.trim() || null,
     p_limit: pageSize,
     p_offset: Math.max(0, (page - 1) * pageSize),
+    ...previewAsUserParam(),
   });
   if (error) {
     console.error('listMyStudentsForTrainer error', error);
@@ -2735,6 +2750,7 @@ export async function getMyStudentForTrainer(
   const { data, error, status } = await supabase.rpc('skyline_trainer_get_student', {
     p_token: token,
     p_student_id: Number(studentId),
+    ...previewAsUserParam(),
   });
   if (error) {
     console.error('getMyStudentForTrainer error', error);
