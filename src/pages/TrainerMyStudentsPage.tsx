@@ -1,30 +1,59 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { KeyRound, Users } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Input } from '../components/ui/Input';
+import { Select } from '../components/ui/Select';
 import { Loader } from '../components/ui/Loader';
 import { AdminListPagination } from '../components/admin/AdminListPagination';
-import { listMyStudentsForTrainer, type TrainerStudentRow } from '../lib/formEngine';
+import {
+  listMyBatchesForTrainer,
+  listMyStudentsForTrainer,
+  type TrainerBatchOption,
+  type TrainerStudentRow,
+} from '../lib/formEngine';
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 25;
+const ALL_BATCHES = '';
 
-/** Trainer-only list: students in the batches the signed-in trainer trains (enforced on the server). */
+/**
+ * Trainer-only list: students in the batches the signed-in trainer trains.
+ * Search, batch filter and paging are all done on the server (which also enforces whose
+ * batches these are), so large batches stay fast.
+ */
 export const TrainerMyStudentsPage: React.FC = () => {
   const [students, setStudents] = useState<TrainerStudentRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [batchId, setBatchId] = useState<string>(ALL_BATCHES);
+  const [batches, setBatches] = useState<TrainerBatchOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    void listMyBatchesForTrainer().then((res) => {
+      if (cancelled) return;
+      setBatches(res.ok ? res.data : []);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     const t = setTimeout(async () => {
       setLoading(true);
-      const res = await listMyStudentsForTrainer(page, PAGE_SIZE, search);
+      const res = await listMyStudentsForTrainer(page, PAGE_SIZE, search, batchId ? Number(batchId) : null);
       if (cancelled) return;
       if (res.ok) {
+        // Landed past the last page (e.g. students were moved out of the batch): go back to page 1.
+        if (res.data.length === 0 && page > 1) {
+          setPage(1);
+          return;
+        }
         setStudents(res.data);
         setTotal(res.total);
         setErrorMessage(null);
@@ -39,28 +68,68 @@ export const TrainerMyStudentsPage: React.FC = () => {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [page, search]);
+  }, [page, search, batchId]);
+
+  const batchOptions = useMemo(() => {
+    const allCount = batches.reduce((sum, b) => sum + b.student_count, 0);
+    return [
+      { value: ALL_BATCHES, label: `All my batches (${allCount})` },
+      ...batches.map((b) => ({ value: String(b.id), label: `${b.name} (${b.student_count})` })),
+    ];
+  }, [batches]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const firstShown = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const lastShown = Math.min(total, page * PAGE_SIZE);
+  const rangeLabel = `Showing ${firstShown}–${lastShown} of ${total}`;
+  const filtered = Boolean(search.trim()) || batchId !== ALL_BATCHES;
+
+  const pagination = (placement: 'top' | 'bottom') => (
+    <AdminListPagination
+      placement={placement}
+      totalItems={total}
+      pageSize={PAGE_SIZE}
+      currentPage={page}
+      totalPages={totalPages}
+      onPrev={() => setPage((p) => Math.max(1, p - 1))}
+      onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
+      onGoToPage={(p) => setPage(Math.min(totalPages, Math.max(1, p)))}
+      itemLabel="students"
+      rangeLabel={rangeLabel}
+    />
+  );
 
   return (
     <div className="min-h-screen bg-[var(--bg)]">
       <div className="w-full px-4 md:px-6 lg:px-8 py-6">
         <Card className="mb-6">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
             <div>
               <h2 className="text-lg font-bold text-[var(--text)]">My students</h2>
               <p className="text-sm text-gray-600 mt-1">Students in the batches you train.</p>
             </div>
-            <div className="w-full md:w-72">
-              <Input
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value);
-                  setPage(1);
-                }}
-                placeholder="Search name, student ID, email or batch"
-              />
+            <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
+              <div className="w-full sm:w-72">
+                <Input
+                  value={search}
+                  onChange={(e) => {
+                    setSearch(e.target.value);
+                    setPage(1);
+                  }}
+                  placeholder="Search name, student ID or email"
+                  aria-label="Search students"
+                />
+              </div>
+              <div className="w-full sm:w-72">
+                <Select
+                  value={batchId}
+                  onChange={(v) => {
+                    setBatchId(v);
+                    setPage(1);
+                  }}
+                  options={batchOptions}
+                />
+              </div>
             </div>
           </div>
         </Card>
@@ -74,23 +143,13 @@ export const TrainerMyStudentsPage: React.FC = () => {
             <p className="text-sm text-amber-700">{errorMessage}</p>
           ) : students.length === 0 ? (
             <p className="text-gray-500">
-              {search.trim()
-                ? 'No students match your search.'
+              {filtered
+                ? 'No students match your search or batch.'
                 : 'There are no students in the batches you train yet.'}
             </p>
           ) : (
             <>
-              <AdminListPagination
-                placement="top"
-                totalItems={total}
-                pageSize={PAGE_SIZE}
-                currentPage={page}
-                totalPages={totalPages}
-                onPrev={() => setPage((p) => Math.max(1, p - 1))}
-                onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
-                onGoToPage={(p) => setPage(p)}
-                itemLabel="students"
-              />
+              {pagination('top')}
               <div className="overflow-x-auto">
                 <table className="min-w-[640px] w-full text-sm border border-[var(--border)] rounded-lg overflow-hidden">
                   <thead className="bg-gray-50 text-gray-700">
@@ -139,6 +198,7 @@ export const TrainerMyStudentsPage: React.FC = () => {
                   </tbody>
                 </table>
               </div>
+              {pagination('bottom')}
             </>
           )}
         </Card>

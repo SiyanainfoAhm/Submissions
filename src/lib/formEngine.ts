@@ -2714,17 +2714,57 @@ function mapTrainerStudentRow(row: Record<string, unknown>): TrainerStudentRow {
   };
 }
 
-/** Students in the batches the signed-in staff member trains (checked on the server). */
+/** A batch the signed-in (or previewed) staff member trains, with its student count. */
+export interface TrainerBatchOption {
+  id: number;
+  name: string;
+  course_name: string | null;
+  student_count: number;
+}
+
+/** Batches the signed-in (or previewed) staff member trains. Feeds the "My students" batch filter. */
+export async function listMyBatchesForTrainer(): Promise<
+  { ok: true; data: TrainerBatchOption[] } | StaffRpcFailure
+> {
+  const token = getStaffSessionToken();
+  if (!token) return STAFF_SESSION_MISSING;
+  const { data, error, status } = await supabase.rpc('skyline_trainer_list_my_batches', {
+    p_token: token,
+    ...previewAsUserParam(),
+  });
+  if (error) {
+    console.error('listMyBatchesForTrainer error', error);
+    return staffRpcFailure(error, status);
+  }
+  const rows = (data as Record<string, unknown>[] | null) || [];
+  return {
+    ok: true,
+    data: rows.map((r) => ({
+      id: Number(r.id),
+      name: String(r.name ?? ''),
+      course_name: r.course_name ? String(r.course_name) : null,
+      student_count: Number(r.student_count ?? 0) || 0,
+    })),
+  };
+}
+
+/**
+ * Students in the batches the signed-in staff member trains (checked on the server).
+ * Search, batch filter and paging all happen on the server; `total` counts every match.
+ */
 export async function listMyStudentsForTrainer(
   page = 1,
-  pageSize = 20,
-  search?: string
+  pageSize = 25,
+  search?: string,
+  batchId?: number | null
 ): Promise<{ ok: true; data: TrainerStudentRow[]; total: number } | StaffRpcFailure> {
   const token = getStaffSessionToken();
   if (!token) return STAFF_SESSION_MISSING;
+  const bid = Number(batchId);
   const { data, error, status } = await supabase.rpc('skyline_trainer_list_my_students', {
     p_token: token,
     p_search: search?.trim() || null,
+    p_batch_id: Number.isFinite(bid) && bid > 0 ? bid : null,
     p_limit: pageSize,
     p_offset: Math.max(0, (page - 1) * pageSize),
     ...previewAsUserParam(),
