@@ -67,11 +67,13 @@ export const AdminUsersPage: React.FC = () => {
   const viewerIsSuperadmin = authUser?.role === 'superadmin';
   const viewerCanStaffPreview =
     viewerIsSuperadmin || Boolean(authUser?.can_login_as_student) || Boolean(authUser?.can_login_as_trainer);
+  // Server rules (skyline_admin_create_user / skyline_admin_update_user): only a super admin
+  // can create admin or super admin accounts, or change anyone's role or rights.
   const assignableRoleOptions = React.useMemo(
     () =>
       viewerIsSuperadmin
         ? [{ value: 'superadmin', label: 'Super Admin' }, ...BASE_ROLE_OPTIONS]
-        : BASE_ROLE_OPTIONS,
+        : BASE_ROLE_OPTIONS.filter((o) => o.value === 'trainer'),
     [viewerIsSuperadmin]
   );
   const assignableRoleValues = React.useMemo(
@@ -151,9 +153,14 @@ export const AdminUsersPage: React.FC = () => {
   }, [currentPage, searchTerm, roleFilter, statusFilter]);
 
   const createError = useMemo(() => validateUserForm(draft, assignableRoleValues), [draft, assignableRoleValues]);
+  // When editing, a non-super-admin keeps the user's current role (they cannot change it).
+  const editRoleValues = useMemo(
+    () => (viewerIsSuperadmin || !editDraft ? assignableRoleValues : [editDraft.role]),
+    [viewerIsSuperadmin, editDraft, assignableRoleValues]
+  );
   const editError = useMemo(
-    () => (editDraft ? validateUserForm(editDraft, assignableRoleValues) : null),
-    [editDraft, assignableRoleValues]
+    () => (editDraft ? validateUserForm(editDraft, editRoleValues) : null),
+    [editDraft, editRoleValues]
   );
 
   const handleCreate = async () => {
@@ -175,8 +182,8 @@ export const AdminUsersPage: React.FC = () => {
       role: draft.role,
     });
     setCreating(false);
-    if (!created) {
-      toast.error('Failed to add user');
+    if (!created.ok) {
+      toast.error(created.message);
       return;
     }
     setCurrentPage(1);
@@ -224,7 +231,7 @@ export const AdminUsersPage: React.FC = () => {
 
   const handleSaveEdit = async () => {
     if (!editingId || !editDraft) return;
-    const err = validateUserForm(editDraft, assignableRoleValues);
+    const err = validateUserForm(editDraft, editRoleValues);
     if (err) {
       toast.error(err);
       return;
@@ -237,18 +244,19 @@ export const AdminUsersPage: React.FC = () => {
       email,
       phone: editDraft.phone,
       status: editDraft.status,
-      role: editDraft.role as CreateUserInput['role'],
-      can_login_as_student: editDraft.can_login_as_student,
-      can_login_as_trainer: editDraft.can_login_as_student,
     };
+    // Role and rights are super-admin-only on the server, so only a super admin sends them.
     if (viewerIsSuperadmin) {
+      updatePayload.role = editDraft.role as CreateUserInput['role'];
+      updatePayload.can_login_as_student = editDraft.can_login_as_student;
+      updatePayload.can_login_as_trainer = editDraft.can_login_as_student;
       updatePayload.can_view_finance_reports =
         editDraft.role === 'admin' ? editDraft.can_view_finance_reports : false;
     }
     const updated = await updateUser(editingId, updatePayload);
     setSavingEdit(false);
-    if (!updated) {
-      toast.error('Failed to update user');
+    if (!updated.ok) {
+      toast.error(updated.message);
       return;
     }
     const res = await listUsersPaged(currentPage, PAGE_SIZE, searchTerm, roleFilter || undefined, statusFilter || undefined);
@@ -267,7 +275,12 @@ export const AdminUsersPage: React.FC = () => {
     return <Building2 className="w-4 h-4 text-emerald-600" />;
   };
 
-  const canEditDirectoryUser = (row: UserRow) => !(row.role === 'superadmin' && !viewerIsSuperadmin);
+  // Mirrors the server: an admin can edit trainers / office users and their own details;
+  // editing another admin or a super admin needs a super admin.
+  const canEditDirectoryUser = (row: UserRow) =>
+    viewerIsSuperadmin ||
+    row.id === authUser?.id ||
+    !(row.role === 'superadmin' || row.role === 'admin');
 
   const handleOpenAsUser = (row: UserRow) => {
     if (!viewerCanStaffPreview || !authUser?.id) return;
@@ -685,8 +698,12 @@ export const AdminUsersPage: React.FC = () => {
             <Select
               value={editDraft.role}
               onChange={(v) => setEditDraft((p) => (p ? { ...p, role: v } : p))}
-              options={assignableRoleOptions}
-              label="Role"
+              options={
+                viewerIsSuperadmin
+                  ? assignableRoleOptions
+                  : [{ value: editDraft.role, label: roleLabel(editDraft.role) }]
+              }
+              label={viewerIsSuperadmin ? 'Role' : 'Role (only a super admin can change this)'}
             />
             <Select
               value={editDraft.status}

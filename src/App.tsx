@@ -45,6 +45,12 @@ const TrainerCourseUnitsPage = lazy(() =>
 const TrainerUnitSubmissionsPage = lazy(() =>
   import('./pages/TrainerUnitSubmissionsPage').then((m) => ({ default: m.TrainerUnitSubmissionsPage }))
 );
+const TrainerMyStudentsPage = lazy(() =>
+  import('./pages/TrainerMyStudentsPage').then((m) => ({ default: m.TrainerMyStudentsPage }))
+);
+const TrainerStudentDetailsPage = lazy(() =>
+  import('./pages/TrainerStudentDetailsPage').then((m) => ({ default: m.TrainerStudentDetailsPage }))
+);
 const AdminDashboardPage = lazy(() => import('./pages/AdminDashboardPage').then(m => ({ default: m.AdminDashboardPage })));
 const MyProfilePage = lazy(() => import('./pages/MyProfilePage').then(m => ({ default: m.MyProfilePage })));
 const AdminEnrollmentPage = lazy(() => import('./pages/AdminEnrollmentPage').then(m => ({ default: m.AdminEnrollmentPage })));
@@ -97,6 +103,8 @@ function App() {
             <Route path="dashboard" element={<DashboardPage />} />
             <Route path="course-units" element={<TrainerCourseUnitsPage />} />
             <Route path="course-units/:formId/submissions" element={<TrainerUnitSubmissionsPage />} />
+            <Route path="my-students" element={<TrainerMyStudentsPage />} />
+            <Route path="my-students/:studentId" element={<TrainerStudentDetailsPage />} />
             <Route path="overview" element={<AdminOnlyRoute><AdminDashboardPage /></AdminOnlyRoute>} />
             <Route path="profile" element={<MyProfilePage />} />
             <Route path="enrollment" element={<AdminOnlyRoute><AdminEnrollmentPage /></AdminOnlyRoute>} />

@@ -68,6 +68,7 @@ export const AdminLayout: React.FC = () => {
     ? [
         { to: '/admin/dashboard', label: 'Dashboard', icon: <LayoutDashboard className="w-5 h-5 shrink-0" />, end: true },
         { to: '/admin/course-units', label: 'Course units', icon: <BookOpen className="w-5 h-5 shrink-0" />, end: true },
+        { to: '/admin/my-students', label: 'My students', icon: <Users className="w-5 h-5 shrink-0" />, end: false },
       ]
     : [
         { to: '/admin/overview', label: 'Dashboard', icon: <LayoutDashboard className="w-5 h-5 shrink-0" />, end: true },

@@ -20,9 +20,23 @@ with `skyline_staff_from_token`). The items below use that token to close what i
   `skyline_login_as_student`, marked as impersonated), then move student reads/writes behind
   token-checked RPCs or RLS.
 
+## 0. Pending: the `skyline_users` revoke (do this first)
+
+`supabase/pending/20261110000005_revoke_client_writes_on_users.sql` is written but **not applied**.
+It revokes client INSERT / UPDATE / DELETE on `skyline_users` and EXECUTE on the old
+`skyline_create_user`. Until it runs, a trainer can still make themselves an admin with one
+direct table write.
+
+Apply it only after the build that uses `skyline_admin_create_user` / `skyline_admin_update_user`
+is live on https://submissions.slit.edu.au and open tabs have refreshed. Then test: direct
+insert / update / delete on `skyline_users` denied, `skyline_create_user` denied, OTP login still
+works, and adding / editing a user from the Users page still works. Roll back by re-granting.
+
 ## 2. Lock-down phase 1 — `skyline_users`
 
-A trainer can currently make themselves an admin with one direct table write.
+Done except for the revoke above: token-checked `skyline_admin_create_user` and
+`skyline_admin_update_user` exist and the frontend uses them; `skyline_admin_set_password` is no
+longer callable by clients. The notes below are kept for reference.
 
 - Replace the direct insert/update in `src/lib/formEngine.ts` (`createTrainer`, `updateUser`)
   with `skyline_admin_create_user(p_token, …)` and `skyline_admin_update_user(p_token, …)`.
@@ -56,6 +70,13 @@ client writes on `skyline_batches` and `skyline_batch_trainers`, and block clien
 `staffUserId` sent in the request body. They should read the session token from a header,
 resolve the caller with `skyline_staff_from_token` (service role), and ignore any user id in
 the body.
+
+## 4b. Trainer pages still read student data directly
+
+"My students" (`/admin/my-students`) lists and shows students through token-checked RPCs, but the
+underlying tables are still readable with the anon key (see item 1), and the trainer dashboard and
+course-unit pages still query them directly. The RPCs set the pattern; the table access is closed
+in the student-data lock-down.
 
 ## 5. Impersonation log viewer
 

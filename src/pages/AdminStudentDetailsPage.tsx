@@ -57,7 +57,7 @@ import {
 import { StudentQualificationsPanel } from '../components/students/StudentQualificationsPanel';
 import { StudentEditModal } from '../components/students/StudentEditModal';
 import type { Student, SubmittedInstanceRow } from '../lib/formEngine';
-import { STUDENT_DASHBOARD_AUTH_STORAGE_KEY, canLoginAsStudent, loginAsStudentViaServer } from '../lib/formEngine';
+import { canLoginAsStudent, openStudentDashboardAsStaff } from '../lib/formEngine';
 import { FormDocumentsPanel } from '../components/documents/FormDocumentsPanel';
 import { cn } from '../components/utils/cn';
 import { formatMelbourneDateTime } from '../utils/melbourneTime';
@@ -1433,20 +1433,13 @@ export const AdminStudentDetailsPage: React.FC = () => {
   const loginAsStudent = async () => {
     if (!viewerCanLoginAsStudent || !student || !Number.isFinite(sid) || sid <= 0 || loggingInAsStudent) return;
     setLoggingInAsStudent(true);
-    const res = await loginAsStudentViaServer(sid);
+    // Server authorises and records it, then the student dashboard opens in a new tab.
+    const res = await openStudentDashboardAsStaff(sid, student.email, user?.id);
     setLoggingInAsStudent(false);
     if (!res.ok) {
       toast.error(res.message);
       if (res.reason === 'forbidden') setTrainerMayLoginAsStudent(false);
-      return;
     }
-    // Store student dashboard session. Keep staff session intact (opens in new tab).
-    sessionStorage.setItem(
-      STUDENT_DASHBOARD_AUTH_STORAGE_KEY,
-      JSON.stringify({ studentId: res.studentId, email: res.email || student.email, at: Date.now(), by: user?.id ?? null })
-    );
-    const opened = window.open('/student/dashboard', '_blank');
-    if (!opened) toast.error('Your browser blocked the new tab. Allow pop-ups for this site and try again.');
   };
 
   const confirmDeleteStudent = async () => {

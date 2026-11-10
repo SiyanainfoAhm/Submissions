@@ -2326,7 +2326,6 @@ export interface CreateUserInput {
   can_login_as_student?: boolean;
   can_login_as_trainer?: boolean;
   can_view_finance_reports?: boolean;
-  password?: string;
 }
 
 export interface CreateTrainerInput {
@@ -2571,15 +2570,26 @@ const STAFF_SESSION_MISSING: StaffRpcFailure = {
 function staffRpcFailure(
   error: { code?: string; message?: string } | null,
   status: number,
-  forbiddenMessage: string
+  /** Shown on 403. Omit to show the server's own (already user-friendly) message. */
+  forbiddenMessage?: string
 ): StaffRpcFailure {
   const code = String(error?.code ?? '');
-  if (status === 401 || code === 'PT401') {
+  // Our RPCs raise PTxxx with a message written for end users; anything else is unexpected.
+  const serverMessage = /^PT\d{3}$/.test(code) ? String(error?.message ?? '').trim() : '';
+  if (code === 'PT401') {
     setStaffSessionToken(null);
     return STAFF_SESSION_MISSING;
   }
-  if (status === 403 || code === 'PT403') {
-    return { ok: false, reason: 'forbidden', message: forbiddenMessage };
+  if (code === 'PT403') {
+    return {
+      ok: false,
+      reason: 'forbidden',
+      message: forbiddenMessage || serverMessage || "You don't have permission to do this.",
+    };
+  }
+  if (serverMessage) return { ok: false, reason: 'error', message: serverMessage };
+  if (status === 401 || status === 403) {
+    return { ok: false, reason: 'forbidden', message: "You don't have permission to do this." };
   }
   return { ok: false, reason: 'error', message: 'Something went wrong. Please try again.' };
 }
@@ -2632,6 +2642,107 @@ export async function setBatchTrainerStudentLogin(
   });
   if (error) return staffRpcFailure(error, status, 'Only an admin can change this setting.');
   return { ok: true };
+}
+
+/**
+ * "Login as student": ask the server (which authorises and records it), then open the student
+ * dashboard in a new tab. The staff session in this tab is left untouched.
+ */
+export async function openStudentDashboardAsStaff(
+  studentId: number,
+  fallbackEmail: string | null | undefined,
+  byUserId: number | null | undefined
+): Promise<{ ok: true } | StaffRpcFailure> {
+  const res = await loginAsStudentViaServer(studentId);
+  if (!res.ok) return res;
+  sessionStorage.setItem(
+    STUDENT_DASHBOARD_AUTH_STORAGE_KEY,
+    JSON.stringify({ studentId: res.studentId, email: res.email || fallbackEmail || '', at: Date.now(), by: byUserId ?? null })
+  );
+  const opened = window.open('/student/dashboard', '_blank');
+  if (!opened) {
+    return {
+      ok: false,
+      reason: 'error',
+      message: 'Your browser blocked the new tab. Allow pop-ups for this site and try again.',
+    };
+  }
+  return { ok: true };
+}
+
+/** A student as a trainer sees them: basic details only. */
+export interface TrainerStudentRow {
+  id: number;
+  student_code: string | null;
+  full_name: string;
+  email: string;
+  phone: string | null;
+  status: string | null;
+  batch_id: number | null;
+  batch_name: string | null;
+  course_name: string | null;
+  /** True when the server would allow "Login as student" for the signed-in staff member. */
+  can_login_as_student: boolean;
+}
+
+function mapTrainerStudentRow(row: Record<string, unknown>): TrainerStudentRow {
+  return {
+    id: Number(row.id),
+    student_code: row.student_code ? String(row.student_code) : null,
+    full_name: String(row.full_name ?? ''),
+    email: String(row.email ?? ''),
+    phone: row.phone ? String(row.phone) : null,
+    status: row.status ? String(row.status) : null,
+    batch_id: row.batch_id != null ? Number(row.batch_id) : null,
+    batch_name: row.batch_name ? String(row.batch_name) : null,
+    course_name: row.course_name ? String(row.course_name) : null,
+    can_login_as_student: row.can_login_as_student === true,
+  };
+}
+
+/** Students in the batches the signed-in staff member trains (checked on the server). */
+export async function listMyStudentsForTrainer(
+  page = 1,
+  pageSize = 20,
+  search?: string
+): Promise<{ ok: true; data: TrainerStudentRow[]; total: number } | StaffRpcFailure> {
+  const token = getStaffSessionToken();
+  if (!token) return STAFF_SESSION_MISSING;
+  const { data, error, status } = await supabase.rpc('skyline_trainer_list_my_students', {
+    p_token: token,
+    p_search: search?.trim() || null,
+    p_limit: pageSize,
+    p_offset: Math.max(0, (page - 1) * pageSize),
+  });
+  if (error) {
+    console.error('listMyStudentsForTrainer error', error);
+    return staffRpcFailure(error, status);
+  }
+  const rows = (data as Record<string, unknown>[] | null) || [];
+  return {
+    ok: true,
+    data: rows.map(mapTrainerStudentRow),
+    total: rows.length > 0 ? Number(rows[0].total_count ?? rows.length) : 0,
+  };
+}
+
+/** One student's basic details. The server answers 403 for a student outside the trainer's batches. */
+export async function getMyStudentForTrainer(
+  studentId: number
+): Promise<{ ok: true; student: TrainerStudentRow } | StaffRpcFailure> {
+  const token = getStaffSessionToken();
+  if (!token) return STAFF_SESSION_MISSING;
+  const { data, error, status } = await supabase.rpc('skyline_trainer_get_student', {
+    p_token: token,
+    p_student_id: Number(studentId),
+  });
+  if (error) {
+    console.error('getMyStudentForTrainer error', error);
+    return staffRpcFailure(error, status);
+  }
+  const rows = (data as Record<string, unknown>[] | null) || [];
+  if (rows.length === 0) return { ok: false, reason: 'error', message: 'Something went wrong. Please try again.' };
+  return { ok: true, student: mapTrainerStudentRow(rows[0]) };
 }
 
 /** Load impersonation rights from DB (cached auth may predate these columns). */
@@ -2845,98 +2956,77 @@ export async function listUsersForBatchAssignmentPaged(
 }
 
 export async function createTrainer(input: CreateTrainerInput): Promise<Trainer | null> {
-  const { data, error } = await supabase
-    .from('skyline_users')
-    .insert({
-      full_name: input.full_name.trim(),
-      email: input.email.trim(),
-      phone: input.phone?.trim() || null,
-      status: input.status?.trim() || 'active',
-    })
-    .select(STAFF_USER_COLUMNS)
-    .single();
-  if (error) {
-    console.error('createTrainer error', error);
-    return null;
-  }
-  const row = data as Record<string, unknown>;
-  return {
-    id: Number(row.id),
-    full_name: String(row.full_name ?? ''),
-    email: String(row.email ?? ''),
-    phone: row.phone ? String(row.phone) : null,
-    status: row.status ? String(row.status) : null,
-    created_at: String(row.created_at ?? ''),
-  };
+  const res = await createUser({ ...input, role: 'trainer' });
+  if (!res.ok) return null;
+  const u = res.user;
+  return { id: u.id, full_name: u.full_name, email: u.email, phone: u.phone, status: u.status, created_at: u.created_at };
 }
 
 export async function updateTrainer(id: number, input: UpdateTrainerInput): Promise<Trainer | null> {
-  const result = await updateUser(id, input);
-  return result ? { id: result.id, full_name: result.full_name, email: result.email, phone: result.phone, status: result.status, created_at: result.created_at } : null;
+  const res = await updateUser(id, input);
+  if (!res.ok) return null;
+  const u = res.user;
+  return { id: u.id, full_name: u.full_name, email: u.email, phone: u.phone, status: u.status, created_at: u.created_at };
 }
 
-export type UpdateUserInput = Partial<Omit<CreateUserInput, 'password'>>;
+export type UpdateUserInput = Partial<CreateUserInput>;
 
-/** Create user with optional password (hashed server-side). */
-export async function createUser(input: CreateUserInput): Promise<UserRow | null> {
-  const { data, error } = await supabase.rpc('skyline_create_user', {
+export type SaveUserResult = { ok: true; user: UserRow } | StaffRpcFailure;
+
+/**
+ * Create a staff user. The server checks the caller's session token: admin or super admin
+ * only, and only a super admin may create admin / super admin accounts.
+ */
+export async function createUser(input: CreateUserInput): Promise<SaveUserResult> {
+  const token = getStaffSessionToken();
+  if (!token) return STAFF_SESSION_MISSING;
+  const { data, error, status } = await supabase.rpc('skyline_admin_create_user', {
+    p_token: token,
     p_full_name: input.full_name.trim(),
     p_email: input.email.trim(),
     p_phone: input.phone?.trim() || null,
     p_status: input.status?.trim() || 'active',
     p_role: input.role,
-    p_password: input.password?.trim() || null,
   });
   if (error) {
     console.error('createUser error', error);
-    return null;
+    return staffRpcFailure(error, status);
   }
   const rows = (data as Record<string, unknown>[] | null) || [];
-  if (rows.length === 0) return null;
-  return mapUserRow(rows[0]);
+  if (rows.length === 0) return { ok: false, reason: 'error', message: 'Something went wrong. Please try again.' };
+  return { ok: true, user: mapUserRow(rows[0]) };
 }
 
-/** Update user (name, email, phone, status, role). */
-export async function updateUser(id: number, input: UpdateUserInput): Promise<UserRow | null> {
-  const payload: Record<string, unknown> = {};
-  if (input.full_name !== undefined) payload.full_name = input.full_name.trim();
-  if (input.email !== undefined) payload.email = input.email.trim();
-  if (input.phone !== undefined) payload.phone = input.phone?.trim() || null;
-  if (input.status !== undefined) payload.status = input.status?.trim() || null;
-  if (input.role !== undefined) payload.role = input.role;
-  if (input.can_login_as_student !== undefined) payload.can_login_as_student = Boolean(input.can_login_as_student);
-  if (input.can_login_as_trainer !== undefined) payload.can_login_as_trainer = Boolean(input.can_login_as_trainer);
+/**
+ * Update a staff user. Only the fields present in `input` are sent. The server checks the
+ * caller's session token; changing role or any can_* right needs a super admin.
+ */
+export async function updateUser(id: number, input: UpdateUserInput): Promise<SaveUserResult> {
+  const token = getStaffSessionToken();
+  if (!token) return STAFF_SESSION_MISSING;
+  const changes: Record<string, unknown> = {};
+  if (input.full_name !== undefined) changes.full_name = input.full_name.trim();
+  if (input.email !== undefined) changes.email = input.email.trim();
+  if (input.phone !== undefined) changes.phone = input.phone?.trim() || null;
+  if (input.status !== undefined) changes.status = input.status?.trim() || 'active';
+  if (input.role !== undefined) changes.role = input.role;
+  if (input.can_login_as_student !== undefined) changes.can_login_as_student = Boolean(input.can_login_as_student);
+  if (input.can_login_as_trainer !== undefined) changes.can_login_as_trainer = Boolean(input.can_login_as_trainer);
   if (input.can_view_finance_reports !== undefined) {
-    payload.can_view_finance_reports = Boolean(input.can_view_finance_reports);
+    changes.can_view_finance_reports = Boolean(input.can_view_finance_reports);
   }
-  payload.updated_by = getAuditFields().updated_by;
-  const { data, error } = await supabase
-    .from('skyline_users')
-    .update(payload)
-    .eq('id', id)
-    .select(STAFF_USER_COLUMNS)
-    .single();
-  if (error) {
-    console.error('updateUser error', error);
-    return null;
-  }
-  const row = data as Record<string, unknown>;
-  return mapUserRow(row);
-}
-
-/** Admin sets a user's password (no current password check). */
-export async function adminSetPassword(userId: number, newPassword: string): Promise<{ success: boolean; message: string }> {
-  const { data, error } = await supabase.rpc('skyline_admin_set_password', {
-    p_user_id: userId,
-    p_new_password: newPassword.trim(),
+  const { data, error, status } = await supabase.rpc('skyline_admin_update_user', {
+    p_token: token,
+    p_user_id: Number(id),
+    p_changes: changes,
   });
   if (error) {
-    console.error('adminSetPassword error', error);
-    return { success: false, message: error.message };
+    console.error('updateUser error', error);
+    return staffRpcFailure(error, status);
   }
-  const rows = (data as { success: boolean; message: string }[] | null) || [];
-  if (rows.length === 0) return { success: false, message: 'Unknown error' };
-  return { success: rows[0].success, message: rows[0].message };
+  const rows = (data as Record<string, unknown>[] | null) || [];
+  if (rows.length === 0) return { ok: false, reason: 'error', message: 'Something went wrong. Please try again.' };
+  return { ok: true, user: mapUserRow(rows[0]) };
 }
 
 export interface Batch {
